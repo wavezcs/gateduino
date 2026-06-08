@@ -1,0 +1,194 @@
+##############################################################
+# Gateduino HA Automations — replaces distributed gate-open logic
+#
+# Add these to HA via Settings > Automations > Import YAML,
+# or paste into configuration.yaml under automation: block.
+#
+# Key entities:
+#   sensor.gateduino_front_luba_rssi       — front node RSSI
+#   sensor.gateduino_back_luba_rssi        — back node RSSI
+#   sensor.gateduino_gate_luba_rssi        — gate node RSSI (closest)
+#   binary_sensor.gateduino_front_luba_present
+#   binary_sensor.gateduino_back_luba_present
+#   binary_sensor.gateduino_gate_luba_present
+#   switch.gateduino_gate_gate             — gate relay
+#   binary_sensor.attic_proxy_mower_ble_connected
+#   binary_sensor.luba_proxy_garage_mower_ble_connected
+#   lawn_mower.luba_vsvuuexm               — mower state (mowing/docked/etc)
+#   input_boolean.gate_auto_open_enabled   — master enable toggle (create in HA)
+##############################################################
+
+# ---------------------------------------------------------------------------
+# AUTOMATION 1: Open gate when Luba approaches
+#
+# Trigger: any scanner RSSI crosses above triggerRssi (-76)
+# Condition:
+#   - mower is actively mowing
+#   - no BLE proxy actively connected (proxy would mean remote user control)
+#   - gate auto-open is enabled (master toggle)
+#   - gate is currently closed
+# Action: call ESPHome service to open gate
+# ---------------------------------------------------------------------------
+- alias: "Gateduino - Auto Open"
+  id: gateduino_auto_open
+  description: "Open gate when Luba mower approaches and conditions are met"
+  mode: single
+  max_exceeded: silent
+  trigger:
+    # Any of the three scanner nodes sees the mower cross the trigger threshold
+    - platform: template
+      value_template: >
+        {{ [
+             states('sensor.gateduino_front_luba_rssi') | float(-100),
+             states('sensor.gateduino_back_luba_rssi') | float(-100),
+             states('sensor.gateduino_gate_luba_rssi') | float(-100)
+           ] | max > -76 }}
+      for:
+        seconds: 3  # must be sustained 3s to avoid noise spikes
+  condition:
+    - condition: state
+      entity_id: lawn_mower.luba_vsvuuexm
+      state: mowing
+    - condition: state
+      entity_id: input_boolean.gate_auto_open_enabled
+      state: "on"
+    - condition: state
+      entity_id: switch.gateduino_gate_gate
+      state: "off"  # gate currently closed
+    # No BLE proxy actively connected — if proxy connected, mower is under
+    # remote/manual control and gate should NOT auto-open
+    - condition: state
+      entity_id: binary_sensor.attic_proxy_mower_ble_connected
+      state: "off"
+    - condition: state
+      entity_id: binary_sensor.luba_proxy_garage_mower_ble_connected
+      state: "off"
+  action:
+    - service: esphome.gateduino_gate_open_gate
+    - service: notify.persistent_notification
+      data:
+        title: "Gate Opened"
+        message: >
+          Auto-opened for Luba. RSSI: front={{ states('sensor.gateduino_front_luba_rssi') }},
+          back={{ states('sensor.gateduino_back_luba_rssi') }},
+          gate={{ states('sensor.gateduino_gate_luba_rssi') }}
+
+# ---------------------------------------------------------------------------
+# AUTOMATION 2: Close gate after mower leaves
+#
+# Trigger: all scanners drop below areaRssi (-87) for sustained period
+#          OR mower docks (state changes from mowing)
+# Condition: gate is currently open, has been open for min_open_sec
+# Action: close gate
+# ---------------------------------------------------------------------------
+- alias: "Gateduino - Auto Close (Mower Gone)"
+  id: gateduino_auto_close_rssi
+  description: "Close gate when Luba moves away from gate area"
+  mode: single
+  max_exceeded: silent
+  trigger:
+    # All three scanners below area threshold
+    - platform: template
+      value_template: >
+        {{ [
+             states('sensor.gateduino_front_luba_rssi') | float(-100),
+             states('sensor.gateduino_back_luba_rssi') | float(-100),
+             states('sensor.gateduino_gate_luba_rssi') | float(-100)
+           ] | max < -87 }}
+      for:
+        seconds: 15
+  condition:
+    - condition: state
+      entity_id: switch.gateduino_gate_gate
+      state: "on"  # gate currently open
+    # Gate must have been open at least 30s before auto-closing
+    # (prevents immediate close if mower is bouncing near threshold)
+    - condition: template
+      value_template: >
+        {{ (now() - states.switch.gateduino_gate_gate.last_changed).total_seconds() > 30 }}
+  action:
+    - service: esphome.gateduino_gate_close_gate
+
+- alias: "Gateduino - Auto Close (Mower Docked)"
+  id: gateduino_auto_close_docked
+  description: "Close gate when Luba finishes mowing and returns to dock"
+  mode: single
+  trigger:
+    - platform: state
+      entity_id: lawn_mower.luba_vsvuuexm
+      from: mowing
+      to:
+        - docked
+        - paused
+        - error
+  condition:
+    - condition: state
+      entity_id: switch.gateduino_gate_gate
+      state: "on"
+  action:
+    - delay:
+        seconds: 60  # give the mower time to actually return through the gate
+    - service: esphome.gateduino_gate_close_gate
+
+# ---------------------------------------------------------------------------
+# AUTOMATION 3: BLE Proxy Active — notify + suppress auto-open
+#
+# When a BLE proxy connects to the mower, the mower stops advertising BLE.
+# The scanner nodes will lose RSSI. This automation notifies and logs the state.
+# The auto-open automation already checks proxy connected state as a condition.
+# ---------------------------------------------------------------------------
+- alias: "Gateduino - BLE Proxy Connected Warning"
+  id: gateduino_proxy_connected
+  description: "Notify when BLE proxy connects to Luba (disables auto-gate)"
+  mode: single
+  trigger:
+    - platform: state
+      entity_id:
+        - binary_sensor.attic_proxy_mower_ble_connected
+        - binary_sensor.luba_proxy_garage_mower_ble_connected
+      to: "on"
+  action:
+    - service: mqtt.publish
+      data:
+        topic: gateduino/gate/log
+        payload: >
+          BLE proxy connected ({{ trigger.entity_id }}) — auto-gate DISABLED while proxy is active.
+          Gate nodes will lose Luba RSSI. Use manual gate control.
+        retain: false
+
+- alias: "Gateduino - BLE Proxy Disconnected"
+  id: gateduino_proxy_disconnected
+  description: "Re-enable auto-gate when BLE proxy disconnects"
+  mode: single
+  trigger:
+    - platform: state
+      entity_id:
+        - binary_sensor.attic_proxy_mower_ble_connected
+        - binary_sensor.luba_proxy_garage_mower_ble_connected
+      to: "off"
+  condition:
+    # Only notify if BOTH proxies are now disconnected
+    - condition: state
+      entity_id: binary_sensor.attic_proxy_mower_ble_connected
+      state: "off"
+    - condition: state
+      entity_id: binary_sensor.luba_proxy_garage_mower_ble_connected
+      state: "off"
+  action:
+    - service: mqtt.publish
+      data:
+        topic: gateduino/gate/log
+        payload: "All BLE proxies disconnected — auto-gate ENABLED"
+        retain: false
+
+# ---------------------------------------------------------------------------
+# NOTE: Create this input_boolean in HA:
+# Settings > Devices & Services > Helpers > Add Helper > Toggle
+#   Name: Gate Auto-Open Enabled
+#   Entity ID: input_boolean.gate_auto_open_enabled
+#   Icon: mdi:gate-open
+#
+# This is the master enable/disable for automatic gate opening.
+# The dashboard "Disable/Enable All BLE Scanning" command should also
+# toggle this boolean (replace the old MQTT command).
+# ---------------------------------------------------------------------------

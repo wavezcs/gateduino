@@ -1,0 +1,58 @@
+blueprint:
+  name: "Gateduino - BLE Proxy Notifications"
+  description: >
+    Logs to MQTT when a BLE proxy connects/disconnects from the mower.
+    When a proxy connects, the mower stops broadcasting BLE and scanner nodes lose RSSI —
+    the auto-open automation already checks proxy state as a condition, so no additional
+    suppression is needed. This blueprint just provides visibility via the MQTT log.
+  domain: automation
+  input:
+    attic_proxy:
+      name: Attic BLE proxy sensor
+      default: binary_sensor.attic_proxy_mower_ble_connected
+      selector:
+        entity:
+          domain: binary_sensor
+    garage_proxy:
+      name: Garage BLE proxy sensor
+      default: binary_sensor.luba_proxy_garage_mower_ble_connected
+      selector:
+        entity:
+          domain: binary_sensor
+
+mode: single
+
+trigger:
+  - platform: state
+    entity_id:
+      - !input attic_proxy
+      - !input garage_proxy
+
+action:
+  - choose:
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.to_state.state == 'on' }}"
+        sequence:
+          - service: mqtt.publish
+            data:
+              topic: gateduino/gate/log
+              payload: >
+                BLE proxy connected ({{ trigger.entity_id }}) — auto-gate DISABLED while proxy is active.
+                Gate nodes will lose Luba RSSI. Use manual gate control.
+              retain: false
+      - conditions:
+          - condition: template
+            value_template: "{{ trigger.to_state.state == 'off' }}"
+          - condition: state
+            entity_id: !input attic_proxy
+            state: "off"
+          - condition: state
+            entity_id: !input garage_proxy
+            state: "off"
+        sequence:
+          - service: mqtt.publish
+            data:
+              topic: gateduino/gate/log
+              payload: "All BLE proxies disconnected — auto-gate ENABLED"
+              retain: false

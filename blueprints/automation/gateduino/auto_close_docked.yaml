@@ -1,0 +1,48 @@
+blueprint:
+  name: "Gateduino - Auto Close (Mower Docked)"
+  description: >
+    Closes the gate when the Luba mower finishes mowing and returns to the dock.
+    Waits dock_delay seconds to give the mower time to actually pass through the gate.
+  domain: automation
+  input:
+    mower:
+      name: Mower entity
+      default: lawn_mower.luba_vsvuuexm
+      selector:
+        entity:
+          domain: lawn_mower
+    gate_switch:
+      name: Gate relay switch
+      default: switch.gateduino_gate_gate
+      selector:
+        entity:
+          domain: switch
+    dock_delay:
+      name: Dock delay (seconds)
+      description: Seconds to wait after mower docks before closing. Default 60.
+      default: 60
+      selector:
+        number:
+          min: 10
+          max: 300
+
+mode: single
+
+trigger:
+  - platform: state
+    entity_id: !input mower
+    from: mowing
+    to:
+      - docked
+      - paused
+      - error
+
+condition:
+  - condition: state
+    entity_id: !input gate_switch
+    state: "on"
+
+action:
+  - delay:
+      seconds: !input dock_delay
+  - service: esphome.gateduino_gate_close_gate

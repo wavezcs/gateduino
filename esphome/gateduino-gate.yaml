@@ -1,0 +1,225 @@
+##############################################################
+# gateduino-gate — Gate controller node (primary)
+# Hardware:
+#   GPIO4  (D4)  — gate relay, active-low (on=open)
+#   GPIO8  (D8)  — interrupt input from front node (hardware fallback)
+#   GPIO10 (D10) — interrupt input from back node (hardware fallback)
+#
+# Luba BLE MAC: C8:FE:0F:1D:0A:F8
+##############################################################
+
+substitutions:
+  node_name: gateduino-gate
+  node_role: gate
+  luba_mac: "C8:FE:0F:1D:0A:F8"
+  trigger_rssi: "-76"
+  area_rssi: "-87"
+  min_open_sec: "30"
+  close_delay_sec: "15"
+
+packages:
+  base: !include common.yaml
+
+esphome:
+  name: ${node_name}
+  friendly_name: "Gateduino Gate"
+  on_boot:
+    priority: -100
+    then:
+      - switch.turn_off: gate_relay
+
+api:
+  encryption:
+    key: !secret api_key_gate
+  services:
+    # Callable from HA: esphome.gateduino_gate_open_gate
+    - service: open_gate
+      then:
+        - switch.turn_on: gate_relay
+        - mqtt.publish:
+            topic: gateduino/${node_role}/log
+            payload: "Gate opened via HA service call"
+    - service: close_gate
+      then:
+        - switch.turn_off: gate_relay
+        - mqtt.publish:
+            topic: gateduino/${node_role}/log
+            payload: "Gate closed via HA service call"
+
+# Gate node also scans BLE — provides a third RSSI data point directly at the gate.
+sensor:
+  - platform: ble_rssi
+    mac_address: ${luba_mac}
+    name: "Luba RSSI"
+    id: luba_rssi
+    filters:
+      - sliding_window_moving_average:
+          window_size: 5
+          send_every: 1
+      - heartbeat: 5s
+    on_value:
+      then:
+        - script.execute: publish_status
+
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    update_interval: 60s
+
+  - platform: uptime
+    name: "Uptime"
+
+binary_sensor:
+  - platform: ble_presence
+    mac_address: ${luba_mac}
+    name: "Luba Present"
+    id: luba_present
+    timeout: 30s
+    on_release:
+      then:
+        - script.execute: publish_status
+
+  # Hardware fallback inputs — front/back child nodes pulse these when HA is unreachable.
+  - platform: gpio
+    pin:
+      number: GPIO8
+      mode: INPUT_PULLDOWN
+    name: "Front Child Trigger"
+    id: front_trigger
+    filters:
+      - delayed_off: 200ms
+    on_press:
+      then:
+        - if:
+            condition:
+              not:
+                api.connected:
+            then:
+              - switch.turn_on: gate_relay
+              - mqtt.publish:
+                  topic: gateduino/${node_role}/log
+                  payload: "Gate opened by front node GPIO (HA offline fallback)"
+
+  - platform: gpio
+    pin:
+      number: GPIO10
+      mode: INPUT_PULLDOWN
+    name: "Back Child Trigger"
+    id: back_trigger
+    filters:
+      - delayed_off: 200ms
+    on_press:
+      then:
+        - if:
+            condition:
+              not:
+                api.connected:
+            then:
+              - switch.turn_on: gate_relay
+              - mqtt.publish:
+                  topic: gateduino/${node_role}/log
+                  payload: "Gate opened by back node GPIO (HA offline fallback)"
+
+# Gate relay — active LOW (inverted: true means on=relay-closed=gate-open)
+switch:
+  - platform: gpio
+    pin:
+      number: GPIO4
+      inverted: true
+    name: "Gate"
+    id: gate_relay
+    restore_mode: ALWAYS_OFF
+    on_turn_on:
+      then:
+        - script.execute: publish_status
+        - mqtt.publish:
+            topic: gateduino/${node_role}/log
+            payload: "Gate OPENED"
+    on_turn_off:
+      then:
+        - script.execute: publish_status
+        - mqtt.publish:
+            topic: gateduino/${node_role}/log
+            payload: "Gate CLOSED"
+
+script:
+  - id: publish_status
+    mode: single
+    then:
+      - mqtt.publish:
+          topic: gateduino/${node_role}/status
+          payload: !lambda |
+            char buf[256];
+            snprintf(buf, sizeof(buf),
+              "{\"node\":\"${node_role}\",\"gateState\":\"%s\","
+              "\"rssiAvg\":%d,\"lubaPresent\":%s,\"blescanning\":true}",
+              id(gate_relay).state ? "open" : "closed",
+              id(luba_present).state ? (int)id(luba_rssi).state : -100,
+              id(luba_present).state ? "true" : "false");
+            return std::string(buf);
+          retain: false
+
+interval:
+  - interval: 5s
+    then:
+      - script.execute: publish_status
+  - interval: 30s
+    then:
+      - mqtt.publish:
+          topic: gateduino/${node_role}/config
+          payload: !lambda |
+            char buf[256];
+            snprintf(buf, sizeof(buf),
+              "{\"nodeMode\":\"${node_role}\",\"areaRssi\":%s,\"triggerRssi\":%s,"
+              "\"bleScanning\":true,\"gateState\":\"%s\"}",
+              "${area_rssi}", "${trigger_rssi}",
+              id(gate_relay).state ? "open" : "closed");
+            return std::string(buf);
+          retain: true
+
+# Node-specific command handler (OPEN/CLOSE/PING/RESTART via gateduino/gate/command)
+text_sensor:
+  - platform: mqtt_subscribe
+    name: "Last Command"
+    id: last_command
+    topic: gateduino/${node_role}/command
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: 'return x == "OPEN";'
+            then:
+              - switch.turn_on: gate_relay
+        - if:
+            condition:
+              lambda: 'return x == "CLOSE";'
+            then:
+              - switch.turn_off: gate_relay
+        - if:
+            condition:
+              lambda: 'return x == "PING";'
+            then:
+              - mqtt.publish:
+                  topic: gateduino/${node_role}/log
+                  payload: "PONG"
+        - if:
+            condition:
+              lambda: 'return x == "RESTART";'
+            then:
+              - lambda: 'App.safe_reboot();'
+
+  # Broadcast OPEN/CLOSE — dashboard and Hubitat compatibility
+  - platform: mqtt_subscribe
+    name: "Broadcast Gate Command"
+    topic: gateduino/all/command
+    on_value:
+      then:
+        - if:
+            condition:
+              lambda: 'return x == "OPEN";'
+            then:
+              - switch.turn_on: gate_relay
+        - if:
+            condition:
+              lambda: 'return x == "CLOSE";'
+            then:
+              - switch.turn_off: gate_relay

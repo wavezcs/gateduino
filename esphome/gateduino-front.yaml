@@ -1,0 +1,97 @@
+##############################################################
+# gateduino-front — BLE scanner node, front yard
+# Static IP: 192.168.0.200
+# Hardware:
+#   GPIO10 (D10) — output pulse to gate node (hardware backup)
+##############################################################
+
+substitutions:
+  node_name: gateduino-front
+  node_role: front
+
+packages:
+  base: !include common.yaml
+
+esphome:
+  name: ${node_name}
+  friendly_name: "Gateduino Front"
+
+api:
+  encryption:
+    key: !secret api_key_front
+
+wifi:
+  manual_ip:
+    static_ip: 192.168.0.200
+    gateway: 192.168.0.1
+    subnet: 255.255.255.0
+
+sensor:
+  - platform: ble_rssi
+    mac_address: ${luba_mac}
+    name: "Luba RSSI"
+    id: luba_rssi
+    filters:
+      - sliding_window_moving_average:
+          window_size: 5
+          send_every: 1
+      - heartbeat: 5s
+    on_value:
+      then:
+        - mqtt.publish:
+            topic: gateduino/${node_role}/status
+            payload: !lambda |
+              char buf[128];
+              snprintf(buf, sizeof(buf),
+                "{\"node\":\"${node_role}\",\"rssiAvg\":%d,\"blescanning\":true}",
+                (int)x);
+              return std::string(buf);
+            retain: false
+
+binary_sensor:
+  - platform: ble_presence
+    mac_address: ${luba_mac}
+    name: "Luba Present"
+    id: luba_present
+    timeout: 30s
+    on_press:
+      then:
+        - mqtt.publish:
+            topic: gateduino/${node_role}/log
+            payload: "Luba BLE advertisements detected"
+    on_release:
+      then:
+        - mqtt.publish:
+            topic: gateduino/${node_role}/log
+            payload: "Luba BLE advertisements lost (out of range or proxy connected)"
+
+# GPIO output — hardware backup trigger to gate node.
+# Fires only if HA API is unreachable (failsafe path).
+output:
+  - platform: gpio
+    pin: GPIO10
+    id: gate_signal_pin
+
+switch:
+  - platform: output
+    output: gate_signal_pin
+    name: "Gate Signal (HW Backup)"
+    id: gate_signal
+    restore_mode: ALWAYS_OFF
+    internal: true
+
+interval:
+  - interval: 30s
+    then:
+      - mqtt.publish:
+          topic: gateduino/${node_role}/config
+          payload: !lambda |
+            char buf[200];
+            snprintf(buf, sizeof(buf),
+              "{\"nodeMode\":\"${node_role}\",\"areaRssi\":%s,\"triggerRssi\":%s,"
+              "\"bleScanning\":true,\"lubaPresent\":%s,\"rssi\":%d}",
+              "${area_rssi}", "${trigger_rssi}",
+              id(luba_present).state ? "true" : "false",
+              id(luba_present).state ? (int)id(luba_rssi).state : -100);
+            return std::string(buf);
+          retain: true

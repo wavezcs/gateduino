@@ -1,0 +1,112 @@
+blueprint:
+  name: "Gateduino - Auto Open"
+  description: >
+    Opens the gate when the Luba mower approaches and all safety conditions are met.
+    Requires three Gateduino scanner nodes (front, back, gate), the Mammotion integration,
+    and an input_boolean named gate_auto_open_enabled.
+  domain: automation
+  input:
+    trigger_rssi:
+      name: Trigger RSSI threshold
+      description: RSSI level (dBm) at which the gate opens. Default -76.
+      default: -76
+      selector:
+        number:
+          min: -100
+          max: -40
+          unit_of_measurement: dBm
+    front_rssi:
+      name: Front scanner RSSI sensor
+      description: sensor.gateduino_front_luba_rssi
+      default: sensor.gateduino_front_luba_rssi
+      selector:
+        entity:
+          domain: sensor
+    back_rssi:
+      name: Back scanner RSSI sensor
+      description: sensor.gateduino_back_luba_rssi
+      default: sensor.gateduino_back_luba_rssi
+      selector:
+        entity:
+          domain: sensor
+    gate_rssi:
+      name: Gate scanner RSSI sensor
+      description: sensor.gateduino_gate_luba_rssi
+      default: sensor.gateduino_gate_luba_rssi
+      selector:
+        entity:
+          domain: sensor
+    mower:
+      name: Mower entity
+      description: The Luba lawn mower entity from the Mammotion integration
+      default: lawn_mower.luba_vsvuuexm
+      selector:
+        entity:
+          domain: lawn_mower
+    gate_switch:
+      name: Gate relay switch
+      description: switch.gateduino_gate_gate
+      default: switch.gateduino_gate_gate
+      selector:
+        entity:
+          domain: switch
+    attic_proxy:
+      name: Attic BLE proxy sensor
+      default: binary_sensor.attic_proxy_mower_ble_connected
+      selector:
+        entity:
+          domain: binary_sensor
+    garage_proxy:
+      name: Garage BLE proxy sensor
+      default: binary_sensor.luba_proxy_garage_mower_ble_connected
+      selector:
+        entity:
+          domain: binary_sensor
+    auto_open_toggle:
+      name: Auto-open enable toggle
+      description: input_boolean.gate_auto_open_enabled
+      default: input_boolean.gate_auto_open_enabled
+      selector:
+        entity:
+          domain: input_boolean
+
+mode: single
+max_exceeded: silent
+
+trigger:
+  - platform: template
+    value_template: >
+      {{ [
+           states(inputs.front_rssi) | float(-100),
+           states(inputs.back_rssi) | float(-100),
+           states(inputs.gate_rssi) | float(-100)
+         ] | max > inputs.trigger_rssi }}
+    for:
+      seconds: 3
+
+condition:
+  - condition: state
+    entity_id: !input mower
+    state: mowing
+  - condition: state
+    entity_id: !input auto_open_toggle
+    state: "on"
+  - condition: state
+    entity_id: !input gate_switch
+    state: "off"
+  - condition: state
+    entity_id: !input attic_proxy
+    state: "off"
+  - condition: state
+    entity_id: !input garage_proxy
+    state: "off"
+
+action:
+  - service: esphome.gateduino_gate_open_gate
+  - service: notify.persistent_notification
+    data:
+      title: "Gate Opened"
+      message: >
+        Auto-opened for Luba. RSSI: front={{ states(inputs.front_rssi) }},
+        back={{ states(inputs.back_rssi) }},
+        gate={{ states(inputs.gate_rssi) }}
