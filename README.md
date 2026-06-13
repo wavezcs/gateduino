@@ -131,6 +131,23 @@ API encryption key per node:
 esphome generate-api-key   # run 3x → api_key_front / api_key_back / api_key_gate
 ```
 
+### 1b. Set your mower's BLE MAC
+
+The mower is identified by **BLE MAC address**, set once in
+`esphome/common.yaml`:
+
+```yaml
+substitutions:
+  luba_mac: "C8:FE:0F:1D:0A:F8"   # <-- your mower's BLE MAC
+```
+
+This is a **compile-time** value (ESPHome binds the BLE tracker's MAC at build),
+so it's not an HA-editable entity — change it here and reflash to target a
+different mower. To find your mower's MAC, scan with a phone BLE app (e.g.
+nRF Connect) or watch a node's logs with `BLE Scanning` on. (MAC is used rather
+than the BLE name because the mower stops advertising its name when a Bluetooth
+proxy connects.)
+
 ### 2. First flash (USB, once per node)
 
 The factory partition table is too small to OTA the full firmware directly, so

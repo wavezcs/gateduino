@@ -39,12 +39,13 @@ api:
   encryption:
     key: !secret api_key_gate
   services:
-    - service: open_gate
+    - service: open_gate       # momentary open (auto-closes after Manual Open Duration)
       then:
-        - script.execute: force_open
+        - script.execute: momentary_open
     - service: close_gate
       then:
-        - switch.turn_off: gate_relay
+        - globals.set: { id: hold_open, value: "false" }
+        - script.execute: close_gate_now
 
 globals:
   - id: auto_enabled
@@ -68,6 +69,15 @@ globals:
     type: uint32_t
     restore_value: false
     initial_value: "0"
+  # Manual control state (overrides the autonomous transit logic):
+  - id: hold_open          # true = stay open indefinitely until released
+    type: bool
+    restore_value: false
+    initial_value: "false"
+  - id: manual_until_ms    # !=0 = momentary open; close at this millis()
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
 
 # ---- Gate-only HA-editable config -------------------------------------------
 number:
@@ -84,6 +94,28 @@ number:
     step: 1
     mode: box
     entity_category: config
+
+  - platform: template
+    name: "Manual Open Duration"
+    id: manual_open_secs
+    icon: "mdi:timer-outline"
+    unit_of_measurement: s
+    optimistic: true
+    restore_value: true
+    initial_value: "15"
+    min_value: 1
+    max_value: 300
+    step: 1
+    mode: box
+    entity_category: config
+
+# ---- Manual control button (Momentary Open) ---------------------------------
+button:
+  - platform: template
+    name: "Momentary Open"
+    icon: "mdi:gate-open"
+    on_press:
+      - script.execute: momentary_open
 
 sensor:
   # Gate node also scans BLE — third RSSI point right at the gate, and the
@@ -136,6 +168,7 @@ espnow:
     - lambda: |-
         if (size < 4 || data[0] != 0x2B || data[2] != 1) return;     // TRIGGER events only
         if (!id(auto_enabled) || !id(ble_scanning).state) return;
+        if (id(hold_open) || id(manual_until_ms) != 0) return;        // manual control wins
         uint8_t src = data[1];                                        // 1=front, 2=back
         uint32_t now = millis();
         uint32_t cooldown_ms = (uint32_t) id(child_cooldown_num).state * 1000UL;
@@ -205,28 +238,58 @@ switch:
     restore_mode: RESTORE_DEFAULT_ON
     entity_category: config
 
+  # Hold Open — stay open indefinitely until released (the old hold-open switch).
+  # Suppresses the autonomous close + ignores mower triggers while held.
+  - platform: template
+    name: "Hold Open"
+    id: hold_open_switch
+    icon: "mdi:gate-arrow-right"
+    lambda: "return id(hold_open);"
+    turn_on_action:
+      - globals.set: { id: hold_open, value: "true" }
+      - globals.set: { id: manual_until_ms, value: "0" }
+      - globals.set: { id: entry_side, value: "3" }
+      - switch.turn_on: gate_relay
+      - text_sensor.template.publish:
+          id: activity_log
+          state: "Hold Open ON"
+    turn_off_action:
+      - globals.set: { id: hold_open, value: "false" }
+      - script.execute: close_gate_now
+      - text_sensor.template.publish:
+          id: activity_log
+          state: "Hold Open OFF - released"
+
 script:
-  # Manual/commanded open. Stamps the loop timers + crossing state so the gate
-  # honors the normal transit_timeout cycle instead of closing on the next tick.
-  - id: force_open
-    mode: single
+  # Momentary open: open now, auto-close after Manual Open Duration seconds.
+  # (HA service open_gate + the Momentary Open button both call this.)
+  - id: momentary_open
+    mode: restart   # re-press restarts the timer
     then:
-      - globals.set:
-          id: entry_side
-          value: "3"
-      - globals.set:
-          id: crossing_active
-          value: "true"
+      - globals.set: { id: hold_open, value: "false" }
+      - globals.set: { id: entry_side, value: "3" }
       - globals.set:
           id: open_since_ms
           value: !lambda "return millis();"
       - globals.set:
-          id: last_trigger_ms
-          value: !lambda "return millis();"
+          id: manual_until_ms
+          value: !lambda "return millis() + (uint32_t) id(manual_open_secs).state * 1000UL;"
       - switch.turn_on: gate_relay
       - text_sensor.template.publish:
           id: activity_log
-          state: "Manual OPEN"
+          state: !lambda |
+            char b[48];
+            snprintf(b, sizeof(b), "Momentary open (%ds)", (int) id(manual_open_secs).state);
+            return std::string(b);
+
+  # Close + clear all manual/transit state.
+  - id: close_gate_now
+    mode: single
+    then:
+      - globals.set: { id: manual_until_ms, value: "0" }
+      - globals.set: { id: crossing_active, value: "false" }
+      - globals.set: { id: entry_side, value: "0" }
+      - switch.turn_off: gate_relay
 
 # ---- Autonomous control loop ------------------------------------------------
 interval:
@@ -237,6 +300,22 @@ interval:
           float trig = id(trigger_rssi_num).state;
           uint32_t hold_ms = (uint32_t) id(transit_timeout_num).state * 1000UL;
           bool local_at_gate = (id(luba_rssi).state >= trig);
+
+          // Manual control (hold / momentary) overrides the autonomous logic.
+          if (id(hold_open)) {
+            if (!id(gate_relay).state) id(gate_relay).turn_on();  // keep asserted
+            return;   // stay open until released
+          }
+          if (id(manual_until_ms) != 0) {
+            if (now >= id(manual_until_ms)) {
+              id(manual_until_ms) = 0;
+              id(gate_relay).turn_off();
+              id(crossing_active) = false;
+              id(entry_side) = 0;
+              id(activity_log).publish_state("Momentary open expired - closed");
+            }
+            return;
+          }
 
           // Backup self-open: gate's own BLE sees the mower at trigger range and
           // no child fired. Respect child_cooldown so it can't reopen right after
