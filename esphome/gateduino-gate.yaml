@@ -5,13 +5,18 @@
 # HA is supervisory: dashboard, manual open/close, Auto Mode disarm, tuning.
 # HA-only (native API); no MQTT.
 #
-# Hybrid transit logic:
-#   - First node to TRIGGER = entry side; gate opens.
-#   - During the crossing, a TRIGGER from the OPPOSITE side is the mower exiting:
-#     it is suppressed (no re-open) but extends the hold.
+# Directional transit state machine (per crossing): ARMED -> CONFIRMED -> close.
+#   - First node to TRIGGER = entry side; gate opens (ARMED = tentative).
+#   - CONFIRMED once the gate's own RSSI reaches Trigger RSSI (the mower actually
+#     reached the gate chokepoint) OR the opposite/exit node fires (reaching the
+#     far node proves the mower transited the gate).
+#   - Abort guard: if ARMED but never CONFIRMED within Arm Timeout, the entry
+#     trigger was a false trip (e.g. mower mowing near a scanner, not crossing) —
+#     close and start child_cooldown so it can't immediately re-open.
+#   - Close (once CONFIRMED) on the FIRST of: gate's own RSSI drops below Clear
+#     RSSI (hysteresis below Trigger RSSI, so it never closes on the mower) OR a
+#     Max Hold backstop elapses (RSSI never decays / mower parked in range).
 #   - child_cooldown is a time-based backstop (same-side spam + post-close window).
-#   - Closes once held >= transit_timeout since last trigger AND the gate's own
-#     RSSI no longer sees the mower (RSSI self-decays to -100 when stale).
 #
 # Hardware (only pin kept — the physical gate relay):
 #   GPIO5 (XIAO D4) — gate relay, active-low (on=open)
@@ -61,6 +66,10 @@ globals:
     type: bool
     restore_value: false
     initial_value: "false"
+  - id: reached_gate        # crossing CONFIRMED: mower reached the gate / exit node
+    type: bool
+    restore_value: false
+    initial_value: "false"
   - id: last_trigger_ms
     type: uint32_t
     restore_value: false
@@ -104,6 +113,55 @@ number:
     restore_value: true
     initial_value: "15"
     min_value: 1
+    max_value: 300
+    step: 1
+    mode: box
+    entity_category: config
+
+  # Close hysteresis: once a crossing is confirmed, the gate closes when its own
+  # RSSI drops below this. Keep it a few dB BELOW Trigger RSSI so the mower
+  # lingering right at the gate (RSSI hovering near trigger) can't trip a close.
+  - platform: template
+    name: "Clear RSSI"
+    id: clear_rssi_num
+    icon: "mdi:signal-off"
+    unit_of_measurement: dBm
+    optimistic: true
+    restore_value: true
+    initial_value: "-83"
+    min_value: -100
+    max_value: -40
+    step: 1
+    mode: box
+    entity_category: config
+
+  # False-trip guard: after the gate opens, the mower must reach the gate
+  # (confirm the crossing) within this long, or the open is aborted and closed.
+  - platform: template
+    name: "Arm Timeout"
+    id: arm_timeout_num
+    icon: "mdi:timer-alert-outline"
+    unit_of_measurement: s
+    optimistic: true
+    restore_value: true
+    initial_value: "12"
+    min_value: 1
+    max_value: 60
+    step: 1
+    mode: box
+    entity_category: config
+
+  # Backstop: hard cap on how long the gate may stay open for one crossing, so a
+  # stuck-high RSSI (reflections / parked mower) can never latch it open.
+  - platform: template
+    name: "Max Hold"
+    id: max_hold_num
+    icon: "mdi:timer-off-outline"
+    unit_of_measurement: s
+    optimistic: true
+    restore_value: true
+    initial_value: "30"
+    min_value: 5
     max_value: 300
     step: 1
     mode: box
@@ -181,13 +239,16 @@ espnow:
         uint32_t now = millis();
         uint32_t cooldown_ms = (uint32_t) id(child_cooldown_num).state * 1000UL;
 
-        // Exit-side suppression: during a crossing, the opposite side is the
-        // mower completing its transit — hold, don't re-open.
+        // Exit-side trigger during an active crossing: the mower reached the
+        // OPPOSITE (far) node, which proves it transited the gate. CONFIRM the
+        // crossing; the interval loop then closes once the gate's own RSSI drops
+        // below Clear RSSI (so we never close on the mower). Don't re-open.
         if (id(crossing_active) && id(entry_side) != 0 && src != id(entry_side)) {
           id(last_trigger_ms) = now;
+          id(reached_gate) = true;
           id(activity_log).publish_state(src == 1
-              ? "Exit-side FRONT trigger suppressed - completing crossing"
-              : "Exit-side BACK trigger suppressed - completing crossing");
+              ? "Exit FRONT reached - crossing confirmed, will close when clear"
+              : "Exit BACK reached - crossing confirmed, will close when clear");
           return;
         }
 
@@ -198,17 +259,19 @@ espnow:
           return;
         }
 
-        // Accept as the entry trigger for a new crossing.
+        // Accept as the entry trigger for a new crossing (ARMED = tentative until
+        // the mower actually reaches the gate; see the Arm Timeout abort guard).
         id(entry_side) = src;
         id(crossing_active) = true;
+        id(reached_gate) = false;
         id(last_trigger_ms) = now;
         if (!id(gate_relay).state) {
           id(open_since_ms) = now;
           id(gate_relay).turn_on();
         }
         id(activity_log).publish_state(src == 1
-            ? "FRONT trigger accepted - opening gate"
-            : "BACK trigger accepted - opening gate");
+            ? "FRONT trigger - gate armed, opening"
+            : "BACK trigger - gate armed, opening");
 
 # ---- Gate relay + switches --------------------------------------------------
 switch:
@@ -296,6 +359,7 @@ script:
     then:
       - globals.set: { id: manual_until_ms, value: "0" }
       - globals.set: { id: crossing_active, value: "false" }
+      - globals.set: { id: reached_gate, value: "false" }
       - globals.set: { id: entry_side, value: "0" }
       - switch.turn_off: gate_relay
 
@@ -305,9 +369,13 @@ interval:
     then:
       - lambda: |-
           uint32_t now = millis();
+          float rssi = id(luba_rssi).state;
           float trig = id(trigger_rssi_num).state;
-          uint32_t hold_ms = (uint32_t) id(transit_timeout_num).state * 1000UL;
-          bool local_at_gate = (id(luba_rssi).state >= trig);
+          float clear = id(clear_rssi_num).state;
+          uint32_t arm_ms     = (uint32_t) id(arm_timeout_num).state * 1000UL;
+          uint32_t maxhold_ms = (uint32_t) id(max_hold_num).state * 1000UL;
+          bool local_at_gate = (rssi >= trig);     // mower at the gate chokepoint
+          bool local_cleared = (rssi <  clear);    // mower has left (hysteresis)
 
           // Manual control (hold / momentary) overrides the autonomous logic.
           if (id(hold_open)) {
@@ -319,6 +387,7 @@ interval:
               id(manual_until_ms) = 0;
               id(gate_relay).turn_off();
               id(crossing_active) = false;
+              id(reached_gate) = false;
               id(entry_side) = 0;
               id(activity_log).publish_state("Momentary open expired - closed");
             }
@@ -327,12 +396,14 @@ interval:
 
           // Backup self-open: gate's own BLE sees the mower at trigger range and
           // no child fired. Respect child_cooldown so it can't reopen right after
-          // a completed crossing.
+          // a completed crossing. A self-open is CONFIRMED immediately — the
+          // mower is, by definition, already at the gate.
           if (local_at_gate && id(auto_enabled) && id(ble_scanning).state && !id(gate_relay).state) {
             uint32_t cooldown_ms = (uint32_t) id(child_cooldown_num).state * 1000UL;
             if (id(last_trigger_ms) == 0 || (now - id(last_trigger_ms)) >= cooldown_ms) {
               id(entry_side) = 3;
               id(crossing_active) = true;
+              id(reached_gate) = true;
               id(last_trigger_ms) = now;
               id(open_since_ms) = now;
               id(gate_relay).turn_on();
@@ -340,15 +411,47 @@ interval:
             }
           }
 
-          // Close: open, held >= transit_timeout since last trigger, and gate's
-          // own BLE no longer sees the mower (RSSI decayed / out of range).
-          if (id(gate_relay).state) {
-            bool held = (now - id(last_trigger_ms)) >= hold_ms;
-            bool cleared = !local_at_gate;
-            if (held && cleared) {
+          // ---- Transit state machine (only while open during a crossing) ------
+          if (id(gate_relay).state && id(crossing_active)) {
+
+            // CONFIRM: the mower reached the gate chokepoint.
+            if (!id(reached_gate) && local_at_gate) {
+              id(reached_gate) = true;
+              id(activity_log).publish_state("Mower reached gate - crossing confirmed");
+            }
+
+            // ABORT guard: ARMED but never confirmed within Arm Timeout. The
+            // entry trigger was a false trip (mower near a scanner but not
+            // crossing). Close and start child_cooldown to block an immediate
+            // re-open from the same lingering mower.
+            if (!id(reached_gate) && (now - id(open_since_ms)) >= arm_ms) {
               id(gate_relay).turn_off();
               id(crossing_active) = false;
               id(entry_side) = 0;
-              id(activity_log).publish_state("Gate closed - mower cleared, transit complete");
+              id(last_trigger_ms) = now;   // arm child_cooldown against re-trip
+              id(activity_log).publish_state("Abort - mower never reached gate (false trigger), closed");
+              return;
+            }
+
+            // CLOSE (confirmed): mower has left the gate — RSSI below Clear RSSI
+            // hysteresis, so it can't close while the mower is still in the gate.
+            if (id(reached_gate) && local_cleared) {
+              id(gate_relay).turn_off();
+              id(crossing_active) = false;
+              id(reached_gate) = false;
+              id(entry_side) = 0;
+              id(activity_log).publish_state("Gate closed - mower cleared gate, transit complete");
+              return;
+            }
+
+            // Max-hold backstop: never latch open indefinitely (RSSI stuck high
+            // from reflections, or a mower parked in range).
+            if ((now - id(open_since_ms)) >= maxhold_ms) {
+              id(gate_relay).turn_off();
+              id(crossing_active) = false;
+              id(reached_gate) = false;
+              id(entry_side) = 0;
+              id(activity_log).publish_state("Gate closed - max hold reached (backstop)");
+              return;
             }
           }

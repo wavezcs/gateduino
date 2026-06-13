@@ -36,12 +36,22 @@ HA, WiFi, or the network are down, the gate still works.
 - Each scanner node measures the mower's BLE signal strength (RSSI). When the
   mower gets close enough (configurable `Trigger RSSI`), the node fires a
   one-shot **TRIGGER** to the gate over ESP-NOW.
-- The gate node opens, then tracks the **transit**: the first node to fire is
-  the "entry" side; a trigger from the opposite ("exit") side as the mower
-  drives through is recognized and ignored so it doesn't re-open the gate. The
-  gate closes only after the mower has cleared the gate's own BLE range and a
-  hold timer (`Transit Timeout`) has elapsed — so it never closes on the mower
-  mid-crossing.
+- The gate node opens, then runs a small **transit state machine**. The first
+  node to fire is the "entry" side and opens the gate *tentatively* (**armed**).
+  The crossing is **confirmed** the moment the mower actually reaches the gate
+  (the gate's own RSSI crosses `Trigger RSSI`) or the opposite ("exit") scanner
+  fires — reaching the far node proves the mower drove through. Once confirmed,
+  the gate **closes as soon as the mower leaves**: its own RSSI drops below
+  `Clear RSSI` (a hysteresis threshold a few dB below `Trigger RSSI`, so it never
+  closes on the mower mid-crossing), or the exit node was reached. So a front→back
+  pass closes right after the mower clears the back of the gate, instead of
+  waiting out a fixed timer.
+- **False-trip guard:** if the gate opens but the mower never actually reaches it
+  within `Arm Timeout` — e.g. the mower is just mowing near a scanner and trips it
+  without intending to cross — the open is **aborted** and the gate closes, then a
+  cooldown blocks an immediate re-open from the same lingering mower.
+- A `Max Hold` backstop force-closes after a hard cap, so reflections or a mower
+  parked in range can never latch the gate open.
 - If the mower's battery dies or its Bluetooth drops while in range, the RSSI
   reading is forced to "no signal" after `rssi_timeout` instead of latching the
   last value — so a stalled mower can't hold the gate open indefinitely.
@@ -223,7 +233,10 @@ gate, turn `Auto Mode` off first.
 |--------|-------|---------|
 | `Trigger RSSI` | all | dBm; mower this close to a node ⇒ trigger the gate |
 | `Area RSSI` | all | dBm; approach threshold (dashboard zone marker) |
-| `Transit Timeout` | all | s; scanner re-fire lockout + gate hold-before-close |
+| `Transit Timeout` | all | s; scanner re-fire lockout (between successive triggers from one node) |
+| `Clear RSSI` | gate | dBm; once a crossing is confirmed, gate closes when its own RSSI drops below this (hysteresis below `Trigger RSSI`) |
+| `Arm Timeout` | gate | s; false-trip guard — mower must reach the gate within this after opening, or the open is aborted |
+| `Max Hold` | gate | s; hard cap on open time per crossing (backstop against stuck-high RSSI) |
 | `Child Cooldown` | gate | s; backstop window after a trigger is accepted |
 | `Manual Open Duration` | gate | s; how long Momentary Open stays open before auto-closing |
 | `BLE Scanning` | all | enable/disable mower detection |
@@ -247,11 +260,27 @@ the defaults and adjust on the live RSSI graph as the mower drives up to a node:
   *start* opening, read the RSSI there, and set `Trigger RSSI` to it.
 - **`Area RSSI`** (default −87) — a looser "approaching" threshold used only as a
   dashboard zone marker; keep it a bit lower (farther) than `Trigger RSSI`.
-- **`Transit Timeout`** (default 10 s) — after a trigger, how long the gate holds
-  open before it may close, and the per-scanner re-fire lockout. Raise it if your
-  mower is slow through the gate; lower it for a snappier close.
+- **`Clear RSSI`** (gate, default −83) — once a crossing is confirmed, the gate
+  closes when its **own** RSSI falls below this. It's a hysteresis floor: keep it
+  a few dB **below** `Trigger RSSI` (−76) so the mower lingering right at the gate
+  can't trip a premature close. Closer to `Trigger RSSI` → closes sooner (mower
+  barely clear); lower (e.g. −88) → waits until the mower is well away. Watch the
+  gate's live RSSI as the mower drives clear and set this to the value it reads
+  just after it's past.
+- **`Arm Timeout`** (gate, default 12 s) — the false-trip guard. After the gate
+  opens, the mower has this long to actually reach the gate (confirm the crossing)
+  before the open is aborted and closed. Set it a bit longer than the slowest
+  real approach from a scanner to the gate; too short → real-but-slow approaches
+  get aborted, too long → a false trip holds the gate open longer before giving up.
+- **`Max Hold`** (gate, default 30 s) — hard cap on how long the gate stays open
+  for one crossing. A pure backstop; it should be comfortably longer than a normal
+  confirmed crossing takes.
+- **`Transit Timeout`** (default 10 s) — the per-scanner re-fire lockout: how long
+  a scanner waits before it can send another trigger. (It no longer gates the
+  gate's close — the close is RSSI/exit-driven now.)
 - **`Child Cooldown`** (gate, default 30 s) — backstop window that ignores repeat
-  triggers right after one is accepted, so a single crossing is de-bounced.
+  triggers right after one is accepted, so a single crossing is de-bounced; also
+  the lockout applied after a false-trip abort.
 - **`Manual Open Duration`** (gate, default 15 s) — how long *Momentary Open*
   holds before auto-closing.
 
