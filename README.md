@@ -45,6 +45,8 @@ HA, WiFi, or the network are down, the gate still works.
 - If the mower's battery dies or its Bluetooth drops while in range, the RSSI
   reading is forced to "no signal" after `rssi_timeout` instead of latching the
   last value — so a stalled mower can't hold the gate open indefinitely.
+- Invalid (non-finite) RSSI readings are rejected before they can fire a
+  trigger, so a momentary sensor glitch can't spuriously open the gate.
 
 ---
 
@@ -186,12 +188,28 @@ Import the included dashboard at
 
 - a **live RSSI graph** of all three nodes,
 - a **streaming Activity log** (the gate's decisions in the HA logbook),
-- gate **controls** (open/close, Auto Mode),
+- gate **controls** (Momentary Open, Hold Open, Auto Mode, raw relay),
 - and all **tuning** sliders.
 
-Manual control: the `Gate` switch, or the `open_gate` / `close_gate` services.
-Turn `Auto Mode` off to disarm auto-open (e.g. while a Bluetooth proxy is using
-the mower).
+### Manual control
+
+Every control is also exposed as an ESPHome entity/service, so you can drive the
+gate from HA, automations, or another hub (e.g. Hubitat via the HA bridge):
+
+- **Momentary Open** — open now and auto-close after `Manual Open Duration`
+  seconds. Available as the *Momentary Open* button and the `open_gate` service.
+  If **Hold Open** is engaged, pressing Momentary instead **cancels the hold and
+  closes** the gate — so the button acts as a toggle while held.
+- **Hold Open** — keep the gate open indefinitely until released; mower-proximity
+  triggers are ignored while it's on. Turn it off (or press Momentary) to close.
+- **Gate** — the raw relay switch; the `close_gate` service force-closes.
+- **Auto Mode** — disarm to lock out auto-open while leaving the gate **closed**
+  (e.g. while a Bluetooth proxy is using the mower, or during maintenance).
+
+For end-to-end testing without the mower, each scanner has a **Test Trigger**
+diagnostic button that fires a real ESP-NOW trigger. ⚠️ It physically actuates
+the gate — it is **not** a dry run. To exercise the radio without moving the
+gate, turn `Auto Mode` off first.
 
 ---
 
@@ -203,8 +221,10 @@ the mower).
 | `Area RSSI` | all | dBm; approach threshold (dashboard zone marker) |
 | `Transit Timeout` | all | s; scanner re-fire lockout + gate hold-before-close |
 | `Child Cooldown` | gate | s; backstop window after a trigger is accepted |
+| `Manual Open Duration` | gate | s; how long Momentary Open stays open before auto-closing |
 | `BLE Scanning` | all | enable/disable mower detection |
-| `Auto Mode` | gate | disarm to lock out auto-open |
+| `Auto Mode` | gate | disarm to lock out auto-open (gate stays closed) |
+| `Hold Open` | gate | keep gate open until released; ignores triggers while on |
 | `Activity` | all | last event (streams to HA logbook) |
 | `Crossing Active` / `Entry Side` | gate | transit state-machine diagnostics |
 

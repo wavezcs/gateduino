@@ -115,7 +115,15 @@ button:
     name: "Momentary Open"
     icon: "mdi:gate-open"
     on_press:
-      - script.execute: momentary_open
+      # If Hold Open is engaged, a momentary press cancels the hold and closes
+      # the gate (toggle), rather than re-opening. Otherwise: normal momentary.
+      - if:
+          condition:
+            lambda: "return id(hold_open);"
+          then:
+            - switch.turn_off: hold_open_switch   # runs hold_open=false + close_gate_now
+          else:
+            - script.execute: momentary_open
 
 sensor:
   # Gate node also scans BLE — third RSSI point right at the gate, and the
