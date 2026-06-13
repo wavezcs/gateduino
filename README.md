@@ -122,33 +122,33 @@ directly from the GPIO.
 Built with [ESPHome](https://esphome.io). You need ESPHome installed
 (`pip install esphome`) and the [secrets file](#1-secrets) filled in.
 
-### 1. Secrets
+### 1. Configure your install (`secrets.yaml`)
 
 ```bash
 cp esphome/secrets.yaml.example esphome/secrets.yaml
 ```
-Edit `esphome/secrets.yaml` with your WiFi credentials, an OTA password, and one
-API encryption key per node:
+
+`esphome/secrets.yaml` is **gitignored** — your credentials are never committed.
+Fill in every value:
+
+| Secret | What it is |
+|--------|------------|
+| `wifi_ssid` / `wifi_password` | Your **2.4 GHz** WiFi (the XIAO is 2.4 GHz only). |
+| `luba_mac` | Your mower's **BLE MAC** — how every node identifies the mower. |
+| `ota_password` | Password for over-the-air firmware updates. **Set your own.** |
+| `fallback_password` | Password for each node's fallback hotspot. **Set your own.** |
+| `api_key_front` / `_back` / `_gate` | One native-API encryption key per node. |
+
+Generate the three API keys:
 ```bash
-esphome generate-api-key   # run 3x → api_key_front / api_key_back / api_key_gate
+esphome generate-api-key   # run 3× → api_key_front / api_key_back / api_key_gate
 ```
 
-### 1b. Set your mower's BLE MAC
-
-The mower is identified by **BLE MAC address**, set once in
-`esphome/common.yaml`:
-
-```yaml
-substitutions:
-  luba_mac: "C8:FE:0F:1D:0A:F8"   # <-- your mower's BLE MAC
-```
-
-This is a **compile-time** value (ESPHome binds the BLE tracker's MAC at build),
-so it's not an HA-editable entity — change it here and reflash to target a
-different mower. To find your mower's MAC, scan with a phone BLE app (e.g.
-nRF Connect) or watch a node's logs with `BLE Scanning` on. (MAC is used rather
-than the BLE name because the mower stops advertising its name when a Bluetooth
-proxy connects.)
+**Finding your mower's BLE MAC:** scan with a phone BLE app (e.g. nRF Connect),
+or flash a node and watch its logs with `BLE Scanning` on. The **MAC** (not the
+BLE name) is used because the mower stops advertising its name once a Bluetooth
+proxy connects. It's bound at compile time, so changing `luba_mac` later needs a
+reflash.
 
 ### 2. First flash (USB, once per node)
 
@@ -170,10 +170,14 @@ Flash the **front and back** nodes first (they're scanners; the gate stays
 closed), then the **gate** node. After the first USB flash, all future updates
 are OTA: `esphome run gateduino-<node>.yaml`.
 
-### 3. Static IPs
+### 3. Static IPs (set for your own network)
 
-Front and back use static IPs (`192.168.0.200` / `192.168.0.250`); the gate node
-uses DHCP. Adjust the `manual_ip` blocks in the node YAMLs for your network.
+The example configs give the **front** and **back** scanners static IPs
+(`192.168.0.200` / `192.168.0.250`) so OTA always finds them; the **gate** node
+uses DHCP. **These IPs are just examples** — edit the `manual_ip` block (plus
+`gateway` / `subnet`) in `gateduino-front.yaml` and `gateduino-back.yaml` to fit
+your LAN, then use those addresses in the `--device` flags above. If your network
+resolves mDNS you can also just use `gateduino-front.local`, etc.
 
 ---
 
@@ -231,8 +235,66 @@ gate, turn `Auto Mode` off first.
 `rssi_timeout` (stale-signal decay, default 15 s) is a build-time constant in
 `esphome/common.yaml` — ESPHome filter timeouts aren't runtime-settable.
 
-RSSI is negative dBm; closer = higher (e.g. −70 is closer than −85). Tune
-`Trigger RSSI` by watching the live graph as the mower drives up to each node.
+### Tuning the thresholds
+
+RSSI is negative dBm and **closer = higher** (−70 is closer than −85). Start from
+the defaults and adjust on the live RSSI graph as the mower drives up to a node:
+
+- **`Trigger RSSI`** (default −76) — how close the mower must be to a scanner
+  before it fires the gate. Too high (e.g. −60) → the gate opens late, only when
+  the mower is right at the node; too low (e.g. −90) → it opens from far away or
+  on stray reflections. Drive the mower to the spot where you want the gate to
+  *start* opening, read the RSSI there, and set `Trigger RSSI` to it.
+- **`Area RSSI`** (default −87) — a looser "approaching" threshold used only as a
+  dashboard zone marker; keep it a bit lower (farther) than `Trigger RSSI`.
+- **`Transit Timeout`** (default 10 s) — after a trigger, how long the gate holds
+  open before it may close, and the per-scanner re-fire lockout. Raise it if your
+  mower is slow through the gate; lower it for a snappier close.
+- **`Child Cooldown`** (gate, default 30 s) — backstop window that ignores repeat
+  triggers right after one is accepted, so a single crossing is de-bounced.
+- **`Manual Open Duration`** (gate, default 15 s) — how long *Momentary Open*
+  holds before auto-closing.
+
+---
+
+## Home Assistant blueprints (optional)
+
+The gate runs its open/close logic **on-device**, so it works with no HA
+automations at all. These optional blueprints (in
+[`blueprints/automation/gateduino/`](blueprints/automation/gateduino)) add
+HA-side conveniences on top:
+
+| Blueprint | What it does |
+|-----------|--------------|
+| **Auto Open** (`auto_open.yaml`) | HA-side open when the mower is `mowing` and approaching — an alternative/backup to the on-device auto-open; checks an enable-toggle and optional BLE-proxy conditions first. |
+| **Auto Close — Mower Gone** (`auto_close_rssi.yaml`) | Close once all scanners stay below `Area RSSI` for a delay. |
+| **Auto Close — Mower Docked** (`auto_close_docked.yaml`) | Close shortly after the mower returns to its dock. |
+
+### Deploy a blueprint
+
+Home Assistant imports blueprints straight from a GitHub URL — **no HACS needed.**
+Easiest is the one-click import links:
+
+- [Import **Auto Open**](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fwavezcs%2Fgateduino%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fgateduino%2Fauto_open.yaml)
+- [Import **Auto Close — Mower Gone**](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fwavezcs%2Fgateduino%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fgateduino%2Fauto_close_rssi.yaml)
+- [Import **Auto Close — Mower Docked**](https://my.home-assistant.io/redirect/blueprint_import/?blueprint_url=https%3A%2F%2Fgithub.com%2Fwavezcs%2Fgateduino%2Fblob%2Fmain%2Fblueprints%2Fautomation%2Fgateduino%2Fauto_close_docked.yaml)
+
+Or manually: **Settings → Automations & Scenes → Blueprints → Import Blueprint**
+and paste the raw file URL, e.g.
+`https://github.com/wavezcs/gateduino/blob/main/blueprints/automation/gateduino/auto_open.yaml`.
+
+After importing, **create an automation** from the blueprint and select your
+entities (mower, gate switch, scanner RSSI sensors). The **Auto Open** blueprint
+also needs an `input_boolean.gate_auto_open_enabled` helper as its master toggle.
+
+### HACS
+
+This repo ships a `hacs.json`, so it can be added under **HACS → ⋮ → Custom
+repositories** for discovery and update notifications. Note that HACS does **not**
+flash ESPHome firmware or natively install blueprints — flash the firmware with
+ESPHome (above) and add the blueprints with HA's built-in **Import Blueprint**
+(also above). HACS is therefore optional here; the import links are the simplest
+path.
 
 ---
 
@@ -247,6 +309,7 @@ esphome/
   secrets.yaml.example   template for your secrets
 ha/
   gateduino-dashboard.yaml   Home Assistant dashboard
+blueprints/automation/gateduino/   optional HA blueprints (auto open/close)
 docs/images/             photos referenced by this README
 ```
 
@@ -257,4 +320,3 @@ docs/images/             photos referenced by this README
 Originally an Arduino sketch with the gate logic on the nodes; briefly moved to
 Home-Assistant-side automations; now back to **on-device** logic over ESP-NOW
 (the best of both — autonomous like the original, wireless and HA-observable).
-See [esphome/MIGRATION.md](esphome/MIGRATION.md) for the migration notes.

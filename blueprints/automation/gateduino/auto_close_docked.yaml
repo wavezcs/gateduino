@@ -7,7 +7,7 @@ blueprint:
   input:
     mower:
       name: Mower entity
-      default: lawn_mower.luba_vsvuuexm
+      default: lawn_mower.your_mower
       selector:
         entity:
           domain: lawn_mower

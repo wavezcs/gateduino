@@ -16,7 +16,7 @@
 # Hardware (only pin kept — the physical gate relay):
 #   GPIO5 (XIAO D4) — gate relay, active-low (on=open)
 #
-# Luba BLE MAC: C8:FE:0F:1D:0A:F8
+# Luba BLE MAC: set as `luba_mac` in secrets.yaml (see README)
 ##############################################################
 
 substitutions:
