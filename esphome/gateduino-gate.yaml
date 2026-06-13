@@ -1,9 +1,20 @@
 ##############################################################
-# gateduino-gate — Gate controller node (primary)
-# Hardware:
-#   GPIO5 (XIAO D4)  — gate relay, active-low (on=open)
-#   GPIO7 (XIAO D8)  — interrupt input from front node (hardware fallback)
-#   GPIO9 (XIAO D10) — interrupt input from back node (hardware fallback)
+# gateduino-gate — Gate controller node (primary, autonomous)
+# Owns the full open/close state machine. Decides locally from ESP-NOW TRIGGER
+# events (front/back) + its own BLE scan — no dependency on HA.
+# HA is supervisory: dashboard, manual open/close, Auto Mode disarm, tuning.
+# HA-only (native API); no MQTT.
+#
+# Hybrid transit logic:
+#   - First node to TRIGGER = entry side; gate opens.
+#   - During the crossing, a TRIGGER from the OPPOSITE side is the mower exiting:
+#     it is suppressed (no re-open) but extends the hold.
+#   - child_cooldown is a time-based backstop (same-side spam + post-close window).
+#   - Closes once held >= transit_timeout since last trigger AND the gate's own
+#     RSSI no longer sees the mower (RSSI self-decays to -100 when stale).
+#
+# Hardware (only pin kept — the physical gate relay):
+#   GPIO5 (XIAO D4) — gate relay, active-low (on=open)
 #
 # Luba BLE MAC: C8:FE:0F:1D:0A:F8
 ##############################################################
@@ -11,11 +22,7 @@
 substitutions:
   node_name: gateduino-gate
   node_role: gate
-  luba_mac: "C8:FE:0F:1D:0A:F8"
-  trigger_rssi: "-76"
-  area_rssi: "-87"
-  min_open_sec: "30"
-  close_delay_sec: "15"
+  child_cooldown: "30"   # s; backstop window ignoring triggers after one is accepted
 
 packages:
   base: !include common.yaml
@@ -32,22 +39,55 @@ api:
   encryption:
     key: !secret api_key_gate
   services:
-    # Callable from HA: esphome.gateduino_gate_open_gate
     - service: open_gate
       then:
-        - switch.turn_on: gate_relay
-        - mqtt.publish:
-            topic: gateduino/${node_role}/log
-            payload: "Gate opened via HA service call"
+        - script.execute: force_open
     - service: close_gate
       then:
         - switch.turn_off: gate_relay
-        - mqtt.publish:
-            topic: gateduino/${node_role}/log
-            payload: "Gate closed via HA service call"
 
-# Gate node also scans BLE — provides a third RSSI data point directly at the gate.
+globals:
+  - id: auto_enabled
+    type: bool
+    restore_value: false
+    initial_value: "true"  # driven by the auto_mode switch (RESTORE_DEFAULT_ON)
+  # Direction state machine
+  - id: entry_side
+    type: uint8_t
+    restore_value: false
+    initial_value: "0"     # 0=none, 1=front, 2=back, 3=gate/manual
+  - id: crossing_active
+    type: bool
+    restore_value: false
+    initial_value: "false"
+  - id: last_trigger_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+  - id: open_since_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+# ---- Gate-only HA-editable config -------------------------------------------
+number:
+  - platform: template
+    name: "Child Cooldown"
+    id: child_cooldown_num
+    icon: "mdi:timer-lock-outline"
+    unit_of_measurement: s
+    optimistic: true
+    restore_value: true
+    initial_value: ${child_cooldown}
+    min_value: 0
+    max_value: 120
+    step: 1
+    mode: box
+    entity_category: config
+
 sensor:
+  # Gate node also scans BLE — third RSSI point right at the gate, and the
+  # close-confirmation source. Self-decays to -100 when the mower goes silent.
   - platform: ble_rssi
     mac_address: ${luba_mac}
     name: "Luba RSSI"
@@ -56,17 +96,10 @@ sensor:
       - sliding_window_moving_average:
           window_size: 5
           send_every: 1
+      - timeout:
+          timeout: ${rssi_timeout}
+          value: -100.0
       - heartbeat: 5s
-    on_value:
-      then:
-        - script.execute: publish_status
-
-  - platform: wifi_signal
-    name: "WiFi Signal"
-    update_interval: 60s
-
-  - platform: uptime
-    name: "Uptime"
 
 binary_sensor:
   - platform: ble_presence
@@ -74,53 +107,72 @@ binary_sensor:
     name: "Luba Present"
     id: luba_present
     timeout: 30s
-    on_release:
-      then:
-        - script.execute: publish_status
 
-  # Hardware fallback inputs — front/back child nodes pulse these when HA is unreachable.
-  - platform: gpio
-    pin:
-      number: GPIO7  # XIAO D8
-      mode: INPUT_PULLDOWN
-    name: "Front Child Trigger"
-    id: front_trigger
-    filters:
-      - delayed_off: 200ms
-    on_press:
-      then:
-        - if:
-            condition:
-              not:
-                api.connected:
-            then:
-              - switch.turn_on: gate_relay
-              - mqtt.publish:
-                  topic: gateduino/${node_role}/log
-                  payload: "Gate opened by front node GPIO (HA offline fallback)"
+  # Diagnostic: is a transit crossing currently in progress?
+  - platform: template
+    name: "Crossing Active"
+    id: crossing_active_bs
+    entity_category: diagnostic
+    lambda: "return id(crossing_active);"
 
-  - platform: gpio
-    pin:
-      number: GPIO9  # XIAO D10
-      mode: INPUT_PULLDOWN
-    name: "Back Child Trigger"
-    id: back_trigger
-    filters:
-      - delayed_off: 200ms
-    on_press:
-      then:
-        - if:
-            condition:
-              not:
-                api.connected:
-            then:
-              - switch.turn_on: gate_relay
-              - mqtt.publish:
-                  topic: gateduino/${node_role}/log
-                  payload: "Gate opened by back node GPIO (HA offline fallback)"
+# Diagnostic: which side the current crossing entered from.
+text_sensor:
+  - platform: template
+    name: "Entry Side"
+    entity_category: diagnostic
+    update_interval: 2s
+    lambda: |-
+      switch (id(entry_side)) {
+        case 1: return {"front"};
+        case 2: return {"back"};
+        case 3: return {"gate/manual"};
+        default: return {"none"};
+      }
 
-# Gate relay — active LOW (inverted: true means on=relay-closed=gate-open)
+# ---- ESP-NOW receiver: hybrid transit decision ------------------------------
+# Packet: [0x2B, src(1=front,2=back), event(1=TRIGGER), rssi(int8)]
+espnow:
+  on_broadcast:
+    - lambda: |-
+        if (size < 4 || data[0] != 0x2B || data[2] != 1) return;     // TRIGGER events only
+        if (!id(auto_enabled) || !id(ble_scanning).state) return;
+        uint8_t src = data[1];                                        // 1=front, 2=back
+        uint32_t now = millis();
+        uint32_t cooldown_ms = (uint32_t) id(child_cooldown_num).state * 1000UL;
+
+        // Exit-side suppression: during a crossing, the opposite side is the
+        // mower completing its transit — hold, don't re-open.
+        if (id(crossing_active) && id(entry_side) != 0 && src != id(entry_side)) {
+          id(last_trigger_ms) = now;
+          id(activity_log).publish_state(src == 1
+              ? "Exit-side FRONT trigger suppressed - completing crossing"
+              : "Exit-side BACK trigger suppressed - completing crossing");
+          return;
+        }
+
+        // Time-based backstop: ignore triggers within child_cooldown of the last
+        // accepted one (same-side spam + post-close re-trigger window).
+        if (id(last_trigger_ms) != 0 && (now - id(last_trigger_ms)) < cooldown_ms) {
+          id(activity_log).publish_state("Trigger within child_cooldown - ignored");
+          return;
+        }
+
+        // Accept as the entry trigger for a new crossing.
+        id(entry_side) = src;
+        id(crossing_active) = true;
+        id(last_trigger_ms) = now;
+        if (!id(gate_relay).state) {
+          id(open_since_ms) = now;
+          id(gate_relay).turn_on();
+        }
+        id(activity_log).publish_state(src == 1
+            ? "FRONT trigger accepted - opening gate"
+            : "BACK trigger accepted - opening gate");
+
+# ---- Gate relay + switches --------------------------------------------------
 switch:
+  # Gate relay — active LOW (inverted: true means on=relay-closed=gate-open).
+  # This is the only GPIO pin in the whole system — it physically opens the gate.
   - platform: gpio
     pin:
       number: GPIO5  # XIAO D4
@@ -128,98 +180,88 @@ switch:
     name: "Gate"
     id: gate_relay
     restore_mode: ALWAYS_OFF
-    on_turn_on:
-      then:
-        - script.execute: publish_status
-        - mqtt.publish:
-            topic: gateduino/${node_role}/log
-            payload: "Gate OPENED"
-    on_turn_off:
-      then:
-        - script.execute: publish_status
-        - mqtt.publish:
-            topic: gateduino/${node_role}/log
-            payload: "Gate CLOSED"
+
+  # Auto Mode — armed by default so an HA outage leaves the gate autonomous.
+  # HA disarms during BLE-proxy conflicts or schedule lockouts.
+  - platform: template
+    name: "Auto Mode"
+    id: auto_mode
+    icon: "mdi:robot"
+    lambda: "return id(auto_enabled);"
+    turn_on_action:
+      - globals.set:
+          id: auto_enabled
+          value: "true"
+      - text_sensor.template.publish:
+          id: activity_log
+          state: "Auto Mode ON"
+    turn_off_action:
+      - globals.set:
+          id: auto_enabled
+          value: "false"
+      - text_sensor.template.publish:
+          id: activity_log
+          state: "Auto Mode OFF (disarmed)"
+    restore_mode: RESTORE_DEFAULT_ON
+    entity_category: config
 
 script:
-  - id: publish_status
+  # Manual/commanded open. Stamps the loop timers + crossing state so the gate
+  # honors the normal transit_timeout cycle instead of closing on the next tick.
+  - id: force_open
     mode: single
     then:
-      - mqtt.publish:
-          topic: gateduino/${node_role}/status
-          payload: !lambda |
-            char buf[256];
-            snprintf(buf, sizeof(buf),
-              "{\"node\":\"${node_role}\",\"gateState\":\"%s\","
-              "\"rssiAvg\":%d,\"lubaPresent\":%s,\"blescanning\":true}",
-              id(gate_relay).state ? "open" : "closed",
-              id(luba_present).state ? (int)id(luba_rssi).state : -100,
-              id(luba_present).state ? "true" : "false");
-            return std::string(buf);
-          retain: false
+      - globals.set:
+          id: entry_side
+          value: "3"
+      - globals.set:
+          id: crossing_active
+          value: "true"
+      - globals.set:
+          id: open_since_ms
+          value: !lambda "return millis();"
+      - globals.set:
+          id: last_trigger_ms
+          value: !lambda "return millis();"
+      - switch.turn_on: gate_relay
+      - text_sensor.template.publish:
+          id: activity_log
+          state: "Manual OPEN"
 
+# ---- Autonomous control loop ------------------------------------------------
 interval:
-  - interval: 5s
+  - interval: 1s
     then:
-      - script.execute: publish_status
-  - interval: 30s
-    then:
-      - mqtt.publish:
-          topic: gateduino/${node_role}/config
-          payload: !lambda |
-            char buf[256];
-            snprintf(buf, sizeof(buf),
-              "{\"nodeMode\":\"${node_role}\",\"areaRssi\":%s,\"triggerRssi\":%s,"
-              "\"bleScanning\":true,\"gateState\":\"%s\"}",
-              "${area_rssi}", "${trigger_rssi}",
-              id(gate_relay).state ? "open" : "closed");
-            return std::string(buf);
-          retain: true
+      - lambda: |-
+          uint32_t now = millis();
+          float trig = id(trigger_rssi_num).state;
+          uint32_t hold_ms = (uint32_t) id(transit_timeout_num).state * 1000UL;
+          bool local_at_gate = (id(luba_rssi).state >= trig);
 
-# Node-specific command handler (OPEN/CLOSE/PING/RESTART via gateduino/gate/command)
-text_sensor:
-  - platform: mqtt_subscribe
-    name: "Last Command"
-    id: last_command
-    topic: gateduino/${node_role}/command
-    on_value:
-      then:
-        - if:
-            condition:
-              lambda: 'return x == "OPEN";'
-            then:
-              - switch.turn_on: gate_relay
-        - if:
-            condition:
-              lambda: 'return x == "CLOSE";'
-            then:
-              - switch.turn_off: gate_relay
-        - if:
-            condition:
-              lambda: 'return x == "PING";'
-            then:
-              - mqtt.publish:
-                  topic: gateduino/${node_role}/log
-                  payload: "PONG"
-        - if:
-            condition:
-              lambda: 'return x == "RESTART";'
-            then:
-              - lambda: 'App.safe_reboot();'
+          // Backup self-open: gate's own BLE sees the mower at trigger range and
+          // no child fired. Respect child_cooldown so it can't reopen right after
+          // a completed crossing.
+          if (local_at_gate && id(auto_enabled) && id(ble_scanning).state && !id(gate_relay).state) {
+            uint32_t cooldown_ms = (uint32_t) id(child_cooldown_num).state * 1000UL;
+            if (id(last_trigger_ms) == 0 || (now - id(last_trigger_ms)) >= cooldown_ms) {
+              id(entry_side) = 3;
+              id(crossing_active) = true;
+              id(last_trigger_ms) = now;
+              id(open_since_ms) = now;
+              id(gate_relay).turn_on();
+              id(activity_log).publish_state("Gate self-open (mower at gate, no child trigger)");
+            }
+          }
 
-  # Broadcast OPEN/CLOSE — dashboard and Hubitat compatibility
-  - platform: mqtt_subscribe
-    name: "Broadcast Gate Command"
-    topic: gateduino/all/command
-    on_value:
-      then:
-        - if:
-            condition:
-              lambda: 'return x == "OPEN";'
-            then:
-              - switch.turn_on: gate_relay
-        - if:
-            condition:
-              lambda: 'return x == "CLOSE";'
-            then:
-              - switch.turn_off: gate_relay
+          // Close: open, held >= transit_timeout since last trigger, and gate's
+          // own BLE no longer sees the mower (RSSI decayed / out of range).
+          if (id(gate_relay).state) {
+            bool held = (now - id(last_trigger_ms)) >= hold_ms;
+            bool cleared = !local_at_gate;
+            if (held && cleared) {
+              id(gate_relay).turn_off();
+              id(crossing_active) = false;
+              id(entry_side) = 0;
+              id(activity_log).publish_state("Gate closed - mower cleared, transit complete");
+            }
+          }
