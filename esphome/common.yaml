@@ -16,7 +16,7 @@
 ##############################################################
 
 substitutions:
-  luba_mac: "C8:FE:0F:1D:0A:F8"
+  luba_mac: !secret luba_mac   # your mower's BLE MAC — set in secrets.yaml (see README)
   trigger_rssi: "-76"      # gate-trigger threshold (dBm); mower this close = at node
   area_rssi: "-87"         # approach threshold (dBm); dashboard zone marker
   transit_timeout: "10"    # s; scanner re-fire lockout + gate hold-before-close
