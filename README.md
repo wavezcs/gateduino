@@ -79,11 +79,10 @@ The automatic gate actuator. The gate node drives the opener's external trigger
 / control input through one GPIO (see Wiring). The opener also provides the 24 V
 that powers the nodes.
 
-> Confirm your opener's trigger behavior against its manual: this firmware holds
-> the relay **closed while the gate should be open** and releases it to close
-> (a level-held "hold-open" input). If your MS-GO-1 expects a momentary toggle
-> pulse instead, the firmware's relay handling needs a small change — open an
-> issue / adjust the `gate_relay` logic accordingly.
+> The MS-GO-1 uses a level-held "hold-open" trigger input: this firmware holds
+> the relay **closed while the gate should be open** and releases it to close.
+> If you adapt this to a different opener that expects a momentary toggle pulse,
+> the `gate_relay` handling needs a small change.
 
 ### Powering the nodes from the gate (24 V → 5 V)
 
