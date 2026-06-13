@@ -105,10 +105,14 @@ When an attic or garage BLE proxy connects to the mower, the mower stops broadca
 
 ## GPIO Wiring
 
+Boards are Seeed XIAO ESP32S3 — note the XIAO D-label to GPIO mapping (D4=GPIO5, D8=GPIO7, D10=GPIO9).
+
 | Wire | From | To |
 |------|------|----|
-| Front→Gate | Front GPIO10 (D10) | Gate GPIO8 (D8) |
-| Back→Gate | Back GPIO10 (D10) | Gate GPIO10 (D10) |
+| Front→Gate | Front GPIO9 (XIAO D10) | Gate GPIO7 (XIAO D8) |
+| Back→Gate | Back GPIO9 (XIAO D10) | Gate GPIO9 (XIAO D10) |
+
+Gate relay: GPIO5 (XIAO D4), active-low.
 
 These GPIO wires are hardware fallback only — used when HA is offline.
 

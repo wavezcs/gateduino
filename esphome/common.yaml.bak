@@ -23,10 +23,9 @@ substitutions:
   close_delay_sec: "15"
 
 esp32:
-  board: seeed_xiao_esp32s3
+  board: esp32dev
   framework:
     type: arduino
-  partitions: min_spiffs.csv
 
 logger:
   level: INFO

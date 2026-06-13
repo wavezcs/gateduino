@@ -1,9 +1,9 @@
 ##############################################################
 # gateduino-gate — Gate controller node (primary)
 # Hardware:
-#   GPIO4  (D4)  — gate relay, active-low (on=open)
-#   GPIO8  (D8)  — interrupt input from front node (hardware fallback)
-#   GPIO10 (D10) — interrupt input from back node (hardware fallback)
+#   GPIO5 (XIAO D4)  — gate relay, active-low (on=open)
+#   GPIO7 (XIAO D8)  — interrupt input from front node (hardware fallback)
+#   GPIO9 (XIAO D10) — interrupt input from back node (hardware fallback)
 #
 # Luba BLE MAC: C8:FE:0F:1D:0A:F8
 ##############################################################
@@ -81,7 +81,7 @@ binary_sensor:
   # Hardware fallback inputs — front/back child nodes pulse these when HA is unreachable.
   - platform: gpio
     pin:
-      number: GPIO8
+      number: GPIO7  # XIAO D8
       mode: INPUT_PULLDOWN
     name: "Front Child Trigger"
     id: front_trigger
@@ -101,7 +101,7 @@ binary_sensor:
 
   - platform: gpio
     pin:
-      number: GPIO10
+      number: GPIO9  # XIAO D10
       mode: INPUT_PULLDOWN
     name: "Back Child Trigger"
     id: back_trigger
@@ -123,7 +123,7 @@ binary_sensor:
 switch:
   - platform: gpio
     pin:
-      number: GPIO4
+      number: GPIO5  # XIAO D4
       inverted: true
     name: "Gate"
     id: gate_relay

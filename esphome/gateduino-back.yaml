@@ -2,7 +2,7 @@
 # gateduino-back — BLE scanner node, back yard
 # Static IP: 192.168.0.250
 # Hardware:
-#   GPIO10 (D10) — output pulse to gate node (hardware backup)
+#   GPIO9 (XIAO D10) — output pulse to gate node (hardware backup)
 ##############################################################
 
 substitutions:
@@ -69,7 +69,7 @@ binary_sensor:
 # Fires only if HA API is unreachable (failsafe path).
 output:
   - platform: gpio
-    pin: GPIO10
+    pin: GPIO9  # XIAO D10
     id: gate_signal_pin
 
 switch:
