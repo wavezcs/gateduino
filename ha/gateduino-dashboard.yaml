@@ -40,6 +40,20 @@ views:
           - entity: binary_sensor.gateduino_gate_luba_present
             name: Gate — Luba present
 
+      # ---- Manual control (Hubitat / button) --------------------------------
+      - type: entities
+        title: Manual control
+        show_header_toggle: false
+        entities:
+          - entity: button.gateduino_gate_momentary_open
+            name: Momentary Open
+          - entity: number.gateduino_gate_manual_open_duration
+            name: Momentary duration
+          - entity: switch.gateduino_gate_hold_open
+            name: Hold Open
+          - entity: switch.gateduino_gate_gate
+            name: Gate relay (raw)
+
       # ---- Live RSSI graph (all three nodes) --------------------------------
       # Native history-graph. For a smoother real-time chart, the ApexCharts
       # (HACS) variant is in the comment block at the bottom of this file.

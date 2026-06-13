@@ -58,6 +58,11 @@ sensor:
             condition:
               lambda: |-
                 if (!id(ble_scanning).state) return false;
+                // Reject non-finite readings: a NaN/inf RSSI would slip past the
+                // threshold check below (every comparison with NaN is false) and
+                // fire a spurious trigger — observed as "RSSI 2147483647" (INT_MAX
+                // from (int)NaN) opening the gate with no mower present.
+                if (!std::isfinite(x)) return false;
                 if (x < id(trigger_rssi_num).state) return false;
                 uint32_t now = millis();
                 uint32_t lockout = (uint32_t) id(transit_timeout_num).state * 1000UL;
@@ -96,3 +101,22 @@ binary_sensor:
         - text_sensor.template.publish:
             id: activity_log
             state: "Luba BLE lost (out of range or proxy connected)"
+
+# ---- Manual test trigger ----------------------------------------------------
+# Fires a real ESP-NOW TRIGGER broadcast on demand — identical payload to a real
+# RSSI-threshold crossing — so the front -> gate radio link + the gate state
+# machine can be exercised end-to-end without the mower in range. The gate reads
+# node_id (1=front) to assign the entry/exit side. Diagnostic-only; bypasses the
+# RSSI threshold but the gate's child_cooldown still rate-limits accepted opens.
+button:
+  - platform: template
+    name: "Test Trigger"
+    icon: "mdi:radio-tower"
+    entity_category: diagnostic
+    on_press:
+      - espnow.send:
+          address: FF:FF:FF:FF:FF:FF
+          data: !lambda "return {0x2B, (uint8_t) ${node_id}, 1, (uint8_t)(int8_t)(int) id(trigger_rssi_num).state};"
+      - text_sensor.template.publish:
+          id: activity_log
+          state: "TEST TRIGGER sent (manual)"
