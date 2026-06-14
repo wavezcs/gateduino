@@ -7,7 +7,7 @@ actual install.
 |------|---------------|
 | `logo.svg` / `icon.svg` | Project logo + square mark |
 | `front.jpg` | The Mammotion Luba mower on the lawn (hero) |
-| `esp32c3.jpg` | A XIAO ESP32-S3 node wired up with its external antenna |
+| `esp32s3.jpg` | A XIAO ESP32-S3 node wired up with its external antenna |
 | `gate_unit.jpg` | The linear-actuator gate opener + node box on the gate post |
 | `gate_wires.jpg` | Inside the opener's controller board (trigger + LOCK terminals) |
 | `electric_lock.jpg` | The electric lock at the gate's leading edge |

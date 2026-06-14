@@ -136,7 +136,7 @@ substitute equivalents freely.
 ### Seeed XIAO ESP32-S3
 
 <p align="center">
-  <img src="docs/images/esp32c3.jpg" alt="XIAO ESP32-S3 node with external antenna" width="55%">
+  <img src="docs/images/esp32s3.jpg" alt="XIAO ESP32-S3 node with external antenna" width="55%">
 </p>
 
 Thumb-sized ESP32-S3 board (dual-core 240 MHz, WiFi + BLE 5, 8 MB flash). Chosen
@@ -150,33 +150,35 @@ ESPHome board id used in this project: `seeed_xiao_esp32s3`. Pin labels on the
 board (D0–D10) **do not** equal the raw GPIO numbers — the only one this project
 uses is **D4 = GPIO5** for the gate relay.
 
-### The gate opener + electric lock
+### Moonshan MS-GO-1 gate opener
 
 <p align="center">
-  <img src="docs/images/gate_unit.jpg" alt="Linear-actuator gate opener on the gate" width="46%">
+  <img src="docs/images/gate_unit.jpg" alt="Moonshan MS-GO-1 opener on the gate" width="46%">
   <img src="docs/images/gate_wires.jpg" alt="Gate opener controller board" width="46%">
 </p>
 
-A **24 V linear-actuator opener** swings the gate; its own controller board (a
-GSDB24-type board, right) handles the motor and limits and exposes a low-voltage
-**trigger / hold-open input** plus a **LOCK output**. The gate node drives only
-that trigger input through one GPIO (see [Wiring](#wiring)) — it never touches the
-motor. The opener is fed from a weather-resistant **24 V supply** (a Mammotion
-MO-A116 in this build; see the power box below).
+A **Moonshan MS-GO-1** automatic opener swings the gate; its own controller board
+(right) handles the motor and limits and exposes a low-voltage **trigger /
+hold-open input**. The gate node drives only that trigger input through one GPIO
+(see [Wiring](#wiring)) — it never touches the motor. The opener is fed from a
+24 V supply in the under-deck power box.
 
-> The opener uses a level-held "hold-open" trigger: this firmware holds the relay
+> The MS-GO-1 uses a level-held "hold-open" trigger: this firmware holds the relay
 > **closed while the gate should be open** and releases it to close. If you adapt
 > this to an opener that expects a momentary toggle pulse, the `gate_relay`
 > handling needs a small change.
+
+### Electric lock — to beat the wind
 
 <p align="center">
   <img src="docs/images/electric_lock.jpg" alt="Electric lock at the gate's leading edge" width="46%">
 </p>
 
-An **electric lock** at the gate's leading edge, driven by the opener's LOCK
-output, positively latches the gate when it's closed and releases the instant it
-opens. This is the **dog-proof** part — the gate isn't just "shut," it's *locked*,
-so it can't be nosed or pushed open between mows.
+The gate would get **blown ajar in high wind** — a small gap, but enough to defeat
+the "keep the dog in" goal. So I added an **electric lock** at the gate's leading
+edge that holds it positively shut when closed and releases when it opens. It's an
+add-on for *this* gate's wind problem; if your gate latches solidly on its own you
+may not need one.
 
 ### Power — one box under the deck
 
@@ -186,10 +188,12 @@ so it can't be nosed or pushed open between mows.
 </p>
 
 A single vented weatherproof junction box under the deck holds the mains side: the
-**24 V / 180 W opener power supply** (the MAMMOTION MO-A116, `24 V 7.5 A`), the
-**24 V→5 V USB-C converters** that feed the nodes, and a **metered smart plug** so
-the whole gate system's power draw is visible in Home Assistant (and can be cut
-remotely). A small inline voltage display makes the 24 V rail easy to eyeball.
+**gate opener's 24 V power supply**, the **24 V→5 V USB-C converters**, and a
+**metered smart plug** so the whole gate system's power draw is visible in Home
+Assistant (and can be cut remotely). A small inline voltage display makes the 24 V
+rail easy to eyeball. From here the **low-voltage 24 V is run underground in
+direct-burial landscaping wire** out to each node, where a local converter steps it
+down to 5 V — no mains anywhere but this one box.
 
 ---
 
@@ -201,12 +205,12 @@ gate but their own power.
 
 | Gate node pin | Connects to |
 |---------------|-------------|
-| **GPIO5 (XIAO D4)**, active-low | Gate opener **trigger / hold-open** input (via relay or opto) |
-| 5 V / GND | 24 V→5 V converter output (from the 24 V opener supply) |
+| **GPIO5 (XIAO D4)**, active-low | MS-GO-1 **trigger / hold-open** input (via relay or opto) |
+| 5 V / GND | 24 V→5 V converter output (from the buried 24 V run) |
 
-The **electric lock is wired to the opener's own LOCK output**, not to the XIAO —
-so the firmware only ever asserts one line (open/hold), and the opener takes care
-of releasing the lock and running the motor.
+The XIAO only ever asserts that one line — the opener handles the motor and limits,
+and the **electric lock is a separate device** that holds the gate shut against
+wind.
 
 `active-low` means the firmware pulls the pin low to open. Use a relay or
 opto-isolator rated for the opener's trigger input rather than driving it directly
@@ -224,7 +228,9 @@ between the front and back lawns.
 The front and back scanners each live in a weatherproof box dropped into an
 **in-ground irrigation valve box**, flush with the grass and out of the mower's
 way, each with a clear line of sight to the gate. Inside: a XIAO ESP32-S3, a
-24 V→5 V converter, and the 6 dBi external antenna.
+24 V→5 V converter, and the 6 dBi external antenna. Power reaches them as **24 V on
+direct-burial landscaping wire** run underground from the under-deck box — no mains
+or batteries at the nodes.
 
 <p align="center">
   <img src="docs/images/view_from_front_sensor.jpg" alt="View from the front scanner toward the gate" width="46%">
