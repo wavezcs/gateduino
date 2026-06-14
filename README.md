@@ -1,6 +1,8 @@
-# Gateduino
+<p align="center">
+  <img src="docs/images/logo.svg" alt="Gateduino" width="460">
+</p>
 
-**Version 1.00**
+<p align="center"><strong>Version 1.00</strong></p>
 
 **Automatic gate control for a robot mower.** Gateduino watches for a Mammotion
 Luba mower over Bluetooth and automatically opens an automatic gate as the mower
@@ -64,13 +66,48 @@ HA, WiFi, or the network are down, the gate still works.
 
 ## Bill of materials
 
-| Qty | Item | Notes |
-|-----|------|-------|
-| 3 | **Seeed Studio XIAO ESP32-S3** | One per node (front, back, gate). |
-| 1 | **Moonshan Gate Opener (MS-GO-1)** | The automatic gate actuator. |
-| 3 | **24 V → 5 V USB-C buck converter** | Powers each XIAO from the gate's 24 V supply. |
-| 1 | Relay / opto module or the XIAO GPIO driving the opener's trigger input | Gate node only. |
-| — | Weatherproof enclosures, wiring | For the outdoor nodes. |
+These are the exact parts used in this build. Amazon links are affiliate links;
+substitute equivalents freely.
+
+**Compute & radio (the three nodes)**
+
+| Qty | Item | Role |
+|-----|------|------|
+| 1× 3-pack | [Seeed Studio XIAO ESP32-S3 (3-pack)](https://amzn.to/4fFGfLJ) | One board per node — front, back, gate. |
+| 3 | [2.4 GHz 6 dBi RP-SMA antenna](https://amzn.to/4aPXV3R) (sold in 2-packs) | External antenna per node for BLE/WiFi range. |
+
+**Gate hardware**
+
+| Qty | Item | Role |
+|-----|------|------|
+| 1 | [Automatic gate opener, aluminium alloy](https://amzn.to/4vKIrWO) | The gate actuator the gate node drives. |
+| 1 | [AGPtek electric magnetic lock, 60 kg / 130 lb](https://amzn.to/4uC5GSb) | Holds the gate shut while closed. |
+| 1 | Relay / opto module (or the XIAO GPIO direct) | Gate node only — drives the opener/lock trigger. |
+
+**Power**
+
+| Qty | Item | Role |
+|-----|------|------|
+| 3 | [DC 12 V/24 V → 5 V USB-C step-down, 5 A / 25 W](https://amzn.to/4uBlKn9) | Powers each XIAO from the gate supply. |
+| 1 | [THIRDREALITY Smart Plug Gen3, 15 A, real-time power monitoring](https://amzn.to/4fFGdDB) | Switched + metered mains feed for the gate/opener. |
+
+**Enclosures**
+
+| Qty | Item | Role |
+|-----|------|------|
+| 1 | [NDS 107BC 6 in. valve box + cover](https://amzn.to/4xrjbqv) | In-ground weatherproof enclosure for a yard scanner. |
+| 2 | [Small weatherproof connection box](https://amzn.to/4xiY89o) | Outdoor enclosure for the scanner nodes. |
+| 1 | [Outdoor waterproof junction box](https://amzn.to/4fKA20Z) | Larger enclosure at the gate. |
+| — | Wiring, connectors, fixings | As needed for your runs. |
+
+**Manual control (optional)**
+
+| Qty | Item | Role |
+|-----|------|------|
+| 1 | [Philips Hue wireless smart button](https://amzn.to/3Sm3PDu) | Physical open/close, bound to the gate via Home Assistant. |
+
+> **Quantities marked here are this build's bill of materials.** A few enclosure
+> counts depend on how many outdoor nodes you box up and where you site them.
 
 ### Seeed XIAO ESP32-S3
 
