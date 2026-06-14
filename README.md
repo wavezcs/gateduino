@@ -15,6 +15,10 @@ router or broker), and the gate node runs the whole open/close decision itself.
 Home Assistant is used only for the dashboard, manual control, and tuning — if
 HA, WiFi, or the network are down, the gate still works.
 
+Note, I built an original project as MQTT based version of this solution, Claude Code
+assisted in the rewrite to ESPHome and documentation of the setup process. 
+Please keep in mind additional validation of the install process is needed.
+
 <p align="center">
   <img src="docs/images/front.jpg" alt="Mammotion Luba mower on the lawn" width="82%">
 </p>
