@@ -340,6 +340,11 @@ Import the included dashboard at
 - gate **controls** (Momentary Open, Hold Open, Auto Mode, raw relay),
 - and all **tuning** sliders.
 
+<p align="center">
+  <img src="docs/images/ha-dashboard.png" alt="Gateduino Home Assistant dashboard" width="100%">
+</p>
+<p align="center"><em>The Gateduino dashboard: gate status &amp; per-node BLE presence, manual control, the live three-node RSSI graph, tuning sliders, and the streaming activity log.</em></p>
+
 ### Manual control
 
 Every control is also exposed as an ESPHome entity/service, so you can drive the
