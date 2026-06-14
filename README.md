@@ -15,7 +15,9 @@ router or broker), and the gate node runs the whole open/close decision itself.
 Home Assistant is used only for the dashboard, manual control, and tuning — if
 HA, WiFi, or the network are down, the gate still works.
 
-![Gateduino overview](docs/images/overview.jpg)
+<p align="center">
+  <img src="docs/images/front.jpg" alt="Mammotion Luba mower on the lawn" width="82%">
+</p>
 
 ---
 
@@ -117,9 +119,9 @@ substitute equivalents freely.
 
 | Qty | Item | Role |
 |-----|------|------|
-| 1 | [NDS 107BC 6 in. valve box + cover](https://amzn.to/4xrjbqv) | In-ground weatherproof enclosure for a yard scanner. |
-| 2 | [Small weatherproof connection box](https://amzn.to/4xiY89o) | Outdoor enclosure for the scanner nodes. |
-| 1 | [Outdoor waterproof junction box](https://amzn.to/4fKA20Z) | Larger enclosure at the gate. |
+| 2 | [NDS 107BC 6 in. valve box + cover](https://amzn.to/4xrjbqv) | In-ground housing for the front & back yard scanners (flush with the lawn). |
+| 3 | [Small weatherproof connection box](https://amzn.to/4xiY89o) | Sealed box for each node (two scanners + the gate node on the post). |
+| 1 | [Outdoor waterproof junction box](https://amzn.to/4fKA20Z) | Under-deck power box — 24 V PSU, converters, smart plug. |
 | — | Wiring, connectors, fixings | As needed for your runs. |
 
 **Manual control (optional)**
@@ -133,58 +135,127 @@ substitute equivalents freely.
 
 ### Seeed XIAO ESP32-S3
 
-![Seeed XIAO ESP32-S3](docs/images/xiao-esp32s3.jpg)
+<p align="center">
+  <img src="docs/images/esp32c3.jpg" alt="XIAO ESP32-S3 node with external antenna" width="55%">
+</p>
 
 Thumb-sized ESP32-S3 board (dual-core 240 MHz, WiFi + BLE 5, 8 MB flash). Chosen
 for its tiny footprint and, importantly, its **external u.FL antenna** — BLE
 range to the mower matters, and the external antenna gives noticeably better
-reception than a PCB antenna when the node is inside an enclosure.
+reception than a PCB antenna when the node is sealed inside a box. Each node runs
+off a 24 V→5 V converter into the board's USB-C port (above: a node wired up
+inside its enclosure, antenna pigtail attached).
 
 ESPHome board id used in this project: `seeed_xiao_esp32s3`. Pin labels on the
 board (D0–D10) **do not** equal the raw GPIO numbers — the only one this project
 uses is **D4 = GPIO5** for the gate relay.
 
-### Moonshan Gate Opener (MS-GO-1)
+### The gate opener + electric lock
 
-![Moonshan MS-GO-1 gate opener](docs/images/moonshan-ms-go-1.jpg)
+<p align="center">
+  <img src="docs/images/gate_unit.jpg" alt="Linear-actuator gate opener on the gate" width="46%">
+  <img src="docs/images/gate_wires.jpg" alt="Gate opener controller board" width="46%">
+</p>
 
-The automatic gate actuator. The gate node drives the opener's external trigger
-/ control input through one GPIO (see Wiring). The opener also provides the 24 V
-that powers the nodes.
+A **24 V linear-actuator opener** swings the gate; its own controller board (a
+GSDB24-type board, right) handles the motor and limits and exposes a low-voltage
+**trigger / hold-open input** plus a **LOCK output**. The gate node drives only
+that trigger input through one GPIO (see [Wiring](#wiring)) — it never touches the
+motor. The opener is fed from a weather-resistant **24 V supply** (a Mammotion
+MO-A116 in this build; see the power box below).
 
-> The MS-GO-1 uses a level-held "hold-open" trigger input: this firmware holds
-> the relay **closed while the gate should be open** and releases it to close.
-> If you adapt this to a different opener that expects a momentary toggle pulse,
-> the `gate_relay` handling needs a small change.
+> The opener uses a level-held "hold-open" trigger: this firmware holds the relay
+> **closed while the gate should be open** and releases it to close. If you adapt
+> this to an opener that expects a momentary toggle pulse, the `gate_relay`
+> handling needs a small change.
 
-### Powering the nodes from the gate (24 V → 5 V)
+<p align="center">
+  <img src="docs/images/electric_lock.jpg" alt="Electric lock at the gate's leading edge" width="46%">
+</p>
 
-![24V to 5V USB-C converter](docs/images/power-converter.jpg)
+An **electric lock** at the gate's leading edge, driven by the opener's LOCK
+output, positively latches the gate when it's closed and releases the instant it
+opens. This is the **dog-proof** part — the gate isn't just "shut," it's *locked*,
+so it can't be nosed or pushed open between mows.
 
-The MS-GO-1 supplies 24 V. Each node is powered by a **24 V → 5 V USB-C buck
-converter** wired to that supply, feeding the XIAO's USB-C port. This means no
-separate adapters or batteries — the nodes run off the gate's own power.
+### Power — one box under the deck
 
-> Run the back/front-yard nodes' power as appropriate for your runs; only the
-> gate node needs to be co-located with the opener.
+<p align="center">
+  <img src="docs/images/open_box_under_deck.jpg" alt="Power enclosure under the deck, open" width="46%">
+  <img src="docs/images/closed_box_under_deck.jpg" alt="Power enclosure under the deck, closed" width="46%">
+</p>
+
+A single vented weatherproof junction box under the deck holds the mains side: the
+**24 V / 180 W opener power supply** (the MAMMOTION MO-A116, `24 V 7.5 A`), the
+**24 V→5 V USB-C converters** that feed the nodes, and a **metered smart plug** so
+the whole gate system's power draw is visible in Home Assistant (and can be cut
+remotely). A small inline voltage display makes the 24 V rail easy to eyeball.
 
 ---
 
 ## Wiring
 
-The **only** signal wire in the system is the gate relay on the gate node — the
-front and back nodes are wireless (ESP-NOW) and need no connection to the gate.
+The **only** signal wire from a Gateduino node is the gate relay on the gate node
+— the front and back scanners are wireless (ESP-NOW) and connect to nothing on the
+gate but their own power.
 
 | Gate node pin | Connects to |
 |---------------|-------------|
-| **GPIO5 (XIAO D4)**, active-low | Gate opener external trigger / hold-open input (via relay or opto) |
-| 5 V / GND | 24 V→5 V converter output (from opener's 24 V) |
+| **GPIO5 (XIAO D4)**, active-low | Gate opener **trigger / hold-open** input (via relay or opto) |
+| 5 V / GND | 24 V→5 V converter output (from the 24 V opener supply) |
 
-![Gate node wiring](docs/images/gate-wiring.jpg)
+The **electric lock is wired to the opener's own LOCK output**, not to the XIAO —
+so the firmware only ever asserts one line (open/hold), and the opener takes care
+of releasing the lock and running the motor.
 
 `active-low` means the firmware pulls the pin low to open. Use a relay or
-opto-isolator rated for the opener's trigger input rather than driving it
-directly from the GPIO.
+opto-isolator rated for the opener's trigger input rather than driving it directly
+from the GPIO.
+
+---
+
+## The physical install
+
+A tour of the actual deployment — a white vinyl yard gate with the mower passing
+between the front and back lawns.
+
+### Scanner nodes — flush in the lawn
+
+The front and back scanners each live in a weatherproof box dropped into an
+**in-ground irrigation valve box**, flush with the grass and out of the mower's
+way, each with a clear line of sight to the gate. Inside: a XIAO ESP32-S3, a
+24 V→5 V converter, and the 6 dBi external antenna.
+
+<p align="center">
+  <img src="docs/images/view_from_front_sensor.jpg" alt="View from the front scanner toward the gate" width="46%">
+  <img src="docs/images/view_from_back_sensor.jpg" alt="View from the back scanner toward the gate" width="46%">
+</p>
+<p align="center"><em>Each scanner's view of the gate (its valve-box lid in the foreground) — front yard, left; back yard, right.</em></p>
+
+<p align="center">
+  <img src="docs/images/open_box.jpg" alt="Scanner node enclosure, open" width="40%">
+  <img src="docs/images/closed_box.jpg" alt="Scanner node enclosure, closed, beside its valve-box lid" width="40%">
+</p>
+<p align="center"><em>A scanner node and its antenna in a sealed box that drops into the green valve-box cover.</em></p>
+
+### At the gate
+
+The gate node sits in a weatherproof box on the gate post next to the opener, with
+its antenna outside the box. Manual control lives here too: a **weatherproof
+cut-off switch** to kill the automation, and a **Philips Hue wireless button** for
+a quick manual open/close — both bound to the gate through Home Assistant.
+
+<p align="center">
+  <img src="docs/images/cutoff_switch.jpg" alt="Weatherproof manual cut-off switch on the gate post" width="40%">
+  <img src="docs/images/gate_button.jpg" alt="Philips Hue button mounted on the gate post" width="40%">
+</p>
+<p align="center"><em>Manual cut-off switch (left) and the Hue button (right) on the gate post.</em></p>
+
+### Watch it work
+
+▶ **[Transit video](docs/images/transit_video.mp4)** — the mower approaches, the
+gate unlocks and opens just for the pass-through, then closes and re-locks right
+behind it.
 
 ---
 
