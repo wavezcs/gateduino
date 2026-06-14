@@ -1,0 +1,92 @@
+blueprint:
+  name: "Gateduino - Auto Close (Mower Gone)"
+  description: >
+    Closes the gate when all scanner nodes drop below the area RSSI threshold,
+    indicating the mower has left the gate area. Gate must have been open at least
+    min_open_sec before auto-close can trigger.
+  domain: automation
+  input:
+    area_rssi:
+      name: Area RSSI threshold
+      description: RSSI level (dBm) below which the mower is considered gone. Default -87.
+      default: -87
+      selector:
+        number:
+          min: -100
+          max: -40
+          unit_of_measurement: dBm
+    close_delay:
+      name: Close delay (seconds)
+      description: How many seconds all nodes must be below area_rssi before closing. Default 15.
+      default: 15
+      selector:
+        number:
+          min: 5
+          max: 120
+    min_open_sec:
+      name: Minimum open time (seconds)
+      description: Gate must have been open this long before auto-close can trigger. Default 30.
+      default: 30
+      selector:
+        number:
+          min: 10
+          max: 300
+    front_rssi:
+      name: Front scanner RSSI sensor
+      default: sensor.gateduino_front_luba_rssi
+      selector:
+        entity:
+          domain: sensor
+    back_rssi:
+      name: Back scanner RSSI sensor
+      default: sensor.gateduino_back_luba_rssi
+      selector:
+        entity:
+          domain: sensor
+    gate_rssi:
+      name: Gate scanner RSSI sensor
+      default: sensor.gateduino_gate_luba_rssi
+      selector:
+        entity:
+          domain: sensor
+    gate_switch:
+      name: Gate relay switch
+      default: switch.gateduino_gate_gate
+      selector:
+        entity:
+          domain: switch
+
+mode: single
+max_exceeded: silent
+
+# Inputs must be mapped into variables to be usable inside templates — Home
+# Assistant does not expose an `inputs` namespace to Jinja.
+variables:
+  area_rssi: !input area_rssi
+  min_open_sec: !input min_open_sec
+  front_rssi: !input front_rssi
+  back_rssi: !input back_rssi
+  gate_rssi: !input gate_rssi
+  gate_switch: !input gate_switch
+
+trigger:
+  - platform: template
+    value_template: >
+      {{ [
+           states(front_rssi) | float(-100),
+           states(back_rssi) | float(-100),
+           states(gate_rssi) | float(-100)
+         ] | max < area_rssi }}
+    for:
+      seconds: !input close_delay
+
+condition:
+  - condition: state
+    entity_id: !input gate_switch
+    state: "on"
+  - condition: template
+    value_template: >
+      {{ (now() - states[gate_switch].last_changed).total_seconds() > min_open_sec }}
+
+action:
+  - service: esphome.gateduino_gate_close_gate

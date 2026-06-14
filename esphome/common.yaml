@@ -1,0 +1,148 @@
+##############################################################
+# Gateduino — shared base configuration (ESPHome package)
+#
+# Include in each node yaml via:
+#   packages:
+#     base: !include common.yaml
+#
+# Required substitutions (must be set in the node yaml):
+#   node_name  — e.g. gateduino-front
+#   node_role  — e.g. front, back, gate
+#
+# HA-only architecture: nodes talk to Home Assistant exclusively over the
+# native ESPHome API (no MQTT). Inter-node control is ESP-NOW. All tunables are
+# HA-editable number/switch entities (restored across reboot) — no reflash to
+# tweak. The substitutions just seed each entity's initial value.
+##############################################################
+
+substitutions:
+  luba_mac: !secret luba_mac   # your mower's BLE MAC — set in secrets.yaml (see README)
+  trigger_rssi: "-76"      # gate-trigger threshold (dBm); mower this close = at node
+  area_rssi: "-87"         # approach threshold (dBm); dashboard zone marker
+  transit_timeout: "10"    # s; scanner re-fire lockout + gate hold-before-close
+  rssi_timeout: "15s"      # stale-RSSI decay: no advert for this long => force -100
+                           # (deploy-time constant — ESPHome filter timeouts are
+                           #  not runtime-settable; prevents a dead/silent mower
+                           #  from latching the gate open on a stale reading)
+
+esp32:
+  board: seeed_xiao_esp32s3
+  framework:
+    type: arduino
+  partitions: min_spiffs.csv
+
+logger:
+  level: DEBUG             # device console logs (live via ESPHome dashboard / HA)
+
+ota:
+  - platform: esphome
+    password: !secret ota_password
+
+captive_portal:
+
+wifi:
+  ssid: !secret wifi_ssid
+  password: !secret wifi_password
+  ap:
+    ssid: "${node_name}-fb"
+    password: !secret fallback_password
+
+# Inter-node radio link. ESP-NOW broadcasts (peer-direct, no AP/broker) carry
+# trigger events from the scanner nodes to the gate node. Primary control
+# transport — independent of WiFi/HA. Channel is derived from the WiFi
+# connection automatically, so it coexists with BLE.
+espnow:
+  auto_add_peer: true
+
+# Passive BLE scanning — never connects, just reads advertisement RSSI.
+# active: false is critical — active scanning sends connection requests
+# which can interfere with the mower's BLE state.
+# Continuous async scanning replaces the old Arduino adaptive-rate hack: it
+# already delivers fast RSSI updates whenever the mower is advertising, with
+# no loop-blocking cost, so there is nothing to "speed up" when it nears.
+esp32_ble_tracker:
+  scan_parameters:
+    active: false
+    interval: 160ms
+    window: 80ms      # 50% duty cycle
+    continuous: true
+
+# ---- HA-editable configuration (all nodes) ----------------------------------
+# Native ESPHome entities → appear in Home Assistant, persist across reboot,
+# and take effect live. Referenced in logic via id(<id>).state.
+number:
+  - platform: template
+    name: "Trigger RSSI"
+    id: trigger_rssi_num
+    icon: "mdi:signal"
+    unit_of_measurement: dBm
+    optimistic: true
+    restore_value: true
+    initial_value: ${trigger_rssi}
+    min_value: -100
+    max_value: -40
+    step: 1
+    mode: box
+    entity_category: config
+
+  - platform: template
+    name: "Area RSSI"
+    id: area_rssi_num
+    icon: "mdi:signal"
+    unit_of_measurement: dBm
+    optimistic: true
+    restore_value: true
+    initial_value: ${area_rssi}
+    min_value: -100
+    max_value: -40
+    step: 1
+    mode: box
+    entity_category: config
+
+  - platform: template
+    name: "Transit Timeout"
+    id: transit_timeout_num
+    icon: "mdi:timer-outline"
+    unit_of_measurement: s
+    optimistic: true
+    restore_value: true
+    initial_value: ${transit_timeout}
+    min_value: 0
+    max_value: 120
+    step: 1
+    mode: box
+    entity_category: config
+
+# ---- Shared switches / buttons ----------------------------------------------
+switch:
+  - platform: template
+    name: "BLE Scanning"
+    id: ble_scanning
+    icon: "mdi:bluetooth"
+    optimistic: true
+    restore_mode: RESTORE_DEFAULT_ON
+    entity_category: config
+
+button:
+  - platform: restart
+    name: "Restart"
+    entity_category: diagnostic
+
+sensor:
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    update_interval: 60s
+
+  - platform: uptime
+    name: "Uptime"
+
+# ---- HA-visible activity log ------------------------------------------------
+# Last significant event on this node. Shows in the HA logbook with history —
+# the primary troubleshooting surface.
+text_sensor:
+  - platform: template
+    name: "Activity"
+    id: activity_log
+    icon: "mdi:text-box-outline"
+    update_interval: never
+    entity_category: diagnostic

@@ -1,0 +1,143 @@
+# Gateduino — Home Assistant dashboard
+# ---------------------------------------------------------------------------
+# Replaces the old mission-control GateView website. Every entity here is a
+# native ESPHome entity served over the API (no MQTT required).
+#
+# Install:
+#   Settings -> Dashboards -> + Add dashboard -> (name it) -> open it ->
+#   top-right pencil -> 3-dot menu -> "Edit in YAML" -> paste this file.
+# Or add a single "view" block into an existing dashboard's YAML.
+#
+# Entity ids assume the ESPHome node names gateduino-front / -back / -gate.
+# If you renamed a node, adjust the prefixes (gateduino_front_, etc.).
+# ---------------------------------------------------------------------------
+title: Gateduino
+views:
+  - title: Gate
+    path: gate
+    icon: mdi:gate
+    cards:
+      # ---- Gate status + control --------------------------------------------
+      - type: entities
+        title: Gate
+        show_header_toggle: false
+        entities:
+          - entity: switch.gateduino_gate_gate
+            name: Gate (open/close)
+            secondary_info: last-changed
+          - entity: switch.gateduino_gate_auto_mode
+            name: Auto Mode (disarm to lock out)
+          - type: divider
+          - entity: sensor.gateduino_gate_entry_side
+            name: Entry side
+          - entity: binary_sensor.gateduino_gate_crossing_active
+            name: Crossing in progress
+          - type: divider
+          - entity: binary_sensor.gateduino_front_luba_present
+            name: Front — Luba present
+          - entity: binary_sensor.gateduino_back_luba_present
+            name: Back — Luba present
+          - entity: binary_sensor.gateduino_gate_luba_present
+            name: Gate — Luba present
+
+      # ---- Manual control (Hubitat / button) --------------------------------
+      - type: entities
+        title: Manual control
+        show_header_toggle: false
+        entities:
+          - entity: button.gateduino_gate_momentary_open
+            name: Momentary Open
+          - entity: number.gateduino_gate_manual_open_duration
+            name: Momentary duration
+          - entity: switch.gateduino_gate_hold_open
+            name: Hold Open
+          - entity: switch.gateduino_gate_gate
+            name: Gate relay (raw)
+
+      # ---- Live RSSI graph (all three nodes) --------------------------------
+      # Native history-graph. For a smoother real-time chart, the ApexCharts
+      # (HACS) variant is in the comment block at the bottom of this file.
+      - type: history-graph
+        title: Luba RSSI (dBm)
+        hours_to_show: 1
+        refresh_interval: 5
+        entities:
+          - entity: sensor.gateduino_front_luba_rssi
+            name: Front
+          - entity: sensor.gateduino_back_luba_rssi
+            name: Back
+          - entity: sensor.gateduino_gate_luba_rssi
+            name: Gate
+
+      # ---- Live activity log ------------------------------------------------
+      # Logbook streams state changes as they happen — the live event feed.
+      - type: logbook
+        title: Activity log
+        hours_to_show: 6
+        entities:
+          - sensor.gateduino_front_activity
+          - sensor.gateduino_back_activity
+          - sensor.gateduino_gate_activity
+          - switch.gateduino_gate_gate
+          - switch.gateduino_gate_auto_mode
+
+      # Current one-line activity per node (latest state at a glance)
+      - type: glance
+        title: Last event per node
+        columns: 3
+        entities:
+          - entity: sensor.gateduino_front_activity
+            name: Front
+          - entity: sensor.gateduino_back_activity
+            name: Back
+          - entity: sensor.gateduino_gate_activity
+            name: Gate
+
+      # ---- Tuning (writes back to the nodes, live, persisted) ---------------
+      - type: entities
+        title: Tuning — thresholds & timing
+        entities:
+          - type: section
+            label: Gate
+          - number.gateduino_gate_trigger_rssi
+          - number.gateduino_gate_area_rssi
+          - number.gateduino_gate_transit_timeout
+          - number.gateduino_gate_child_cooldown
+          - switch.gateduino_gate_ble_scanning
+          - type: section
+            label: Front
+          - number.gateduino_front_trigger_rssi
+          - number.gateduino_front_area_rssi
+          - number.gateduino_front_transit_timeout
+          - switch.gateduino_front_ble_scanning
+          - type: section
+            label: Back
+          - number.gateduino_back_trigger_rssi
+          - number.gateduino_back_area_rssi
+          - number.gateduino_back_transit_timeout
+          - switch.gateduino_back_ble_scanning
+
+# ---------------------------------------------------------------------------
+# Optional: nicer live RSSI chart with ApexCharts (HACS -> "apexcharts-card").
+# Replace the history-graph card above with:
+#
+#   - type: custom:apexcharts-card
+#     header:
+#       title: Luba RSSI (dBm)
+#       show: true
+#     graph_span: 30min
+#     update_interval: 5s
+#     yaxis:
+#       - min: -100
+#         max: -40
+#     series:
+#       - entity: sensor.gateduino_front_luba_rssi
+#         name: Front
+#         stroke_width: 2
+#       - entity: sensor.gateduino_back_luba_rssi
+#         name: Back
+#         stroke_width: 2
+#       - entity: sensor.gateduino_gate_luba_rssi
+#         name: Gate
+#         stroke_width: 2
+# ---------------------------------------------------------------------------

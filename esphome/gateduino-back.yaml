@@ -1,0 +1,122 @@
+##############################################################
+# gateduino-back — BLE scanner node, back yard
+# Static IP: 192.168.0.250
+# Sends edge-triggered TRIGGER events to the gate over ESP-NOW. node_id 2.
+# HA-only (native API); no MQTT; no GPIO.
+##############################################################
+
+substitutions:
+  node_name: gateduino-back
+  node_role: back
+  node_id: "2"
+
+packages:
+  base: !include common.yaml
+
+esphome:
+  name: ${node_name}
+  friendly_name: "Gateduino Back"
+
+api:
+  encryption:
+    key: !secret api_key_back
+
+wifi:
+  manual_ip:
+    static_ip: 192.168.0.250
+    gateway: 192.168.0.1
+    subnet: 255.255.255.0
+
+globals:
+  # Per-node re-fire lockout timestamp (the original "child_travel_start").
+  - id: last_self_trigger_ms
+    type: uint32_t
+    restore_value: false
+    initial_value: "0"
+
+sensor:
+  - platform: ble_rssi
+    mac_address: ${luba_mac}
+    name: "Luba RSSI"
+    id: luba_rssi
+    filters:
+      - sliding_window_moving_average:
+          window_size: 5
+          send_every: 1
+      # Stale-RSSI decay: if the mower stops advertising, force -100 (no signal)
+      # instead of latching the last value. Placed BEFORE heartbeat so the
+      # heartbeat's re-emits can't keep a dead reading alive.
+      - timeout:
+          timeout: ${rssi_timeout}
+          value: -100.0
+      - heartbeat: 5s
+    on_value:
+      then:
+        # Edge-triggered gate trigger: mower crossed into trigger range AND this
+        # node's re-fire lockout (transit_timeout) has elapsed.
+        - if:
+            condition:
+              lambda: |-
+                if (!id(ble_scanning).state) return false;
+                // Reject non-finite readings: a NaN/inf RSSI would slip past the
+                // threshold check below (every comparison with NaN is false) and
+                // fire a spurious trigger — observed as "RSSI 2147483647" (INT_MAX
+                // from (int)NaN) opening the gate with no mower present.
+                if (!std::isfinite(x)) return false;
+                if (x < id(trigger_rssi_num).state) return false;
+                uint32_t now = millis();
+                uint32_t lockout = (uint32_t) id(transit_timeout_num).state * 1000UL;
+                if (id(last_self_trigger_ms) != 0 && (now - id(last_self_trigger_ms)) < lockout)
+                  return false;
+                return true;
+            then:
+              - globals.set:
+                  id: last_self_trigger_ms
+                  value: !lambda "return millis();"
+              # ESP-NOW TRIGGER: [magic, node_id, event=1 (TRIGGER), rssi(int8)]
+              - espnow.send:
+                  address: FF:FF:FF:FF:FF:FF
+                  data: !lambda "return {0x2B, (uint8_t) ${node_id}, 1, (uint8_t)(int8_t)(int) x};"
+              - text_sensor.template.publish:
+                  id: activity_log
+                  state: !lambda |
+                    char b[64];
+                    snprintf(b, sizeof(b), "TRIGGER sent (RSSI %d >= %d)",
+                             (int) x, (int) id(trigger_rssi_num).state);
+                    return std::string(b);
+
+binary_sensor:
+  - platform: ble_presence
+    mac_address: ${luba_mac}
+    name: "Luba Present"
+    id: luba_present
+    timeout: 30s
+    on_press:
+      then:
+        - text_sensor.template.publish:
+            id: activity_log
+            state: "Luba BLE detected"
+    on_release:
+      then:
+        - text_sensor.template.publish:
+            id: activity_log
+            state: "Luba BLE lost (out of range or proxy connected)"
+
+# ---- Manual test trigger ----------------------------------------------------
+# Fires a real ESP-NOW TRIGGER broadcast on demand — identical payload to a real
+# RSSI-threshold crossing — so the back -> gate radio link + the gate state
+# machine can be exercised end-to-end without the mower in range. The gate reads
+# node_id (2=back) to assign the entry/exit side. Diagnostic-only; bypasses the
+# RSSI threshold but the gate's child_cooldown still rate-limits accepted opens.
+button:
+  - platform: template
+    name: "Test Trigger"
+    icon: "mdi:radio-tower"
+    entity_category: diagnostic
+    on_press:
+      - espnow.send:
+          address: FF:FF:FF:FF:FF:FF
+          data: !lambda "return {0x2B, (uint8_t) ${node_id}, 1, (uint8_t)(int8_t)(int) id(trigger_rssi_num).state};"
+      - text_sensor.template.publish:
+          id: activity_log
+          state: "TEST TRIGGER sent (manual)"
