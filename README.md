@@ -23,21 +23,14 @@ HA, WiFi, or the network are down, the gate still works.
 
 ## Why I built this
 
-I have a dog, and a dog that gets out is the whole problem — the gate has to stay
-**closed**. But I also have a robot mower that needs to move between zones on its
-own schedule, which means the gate has to open for it. Those two things fight each
-other.
+Most robot-mower gate solutions I found wanted me to **cut into the gate**. That 
+doesn't work for a vinyl fence. I needed to keep the gate closed as well since we
+have a dog. I was stuck so I wanted to solve this with a fun technical project.
 
-Most robot-mower gate solutions I found wanted me to **cut into the gate** or the
-opener — splice the mower's perimeter wire, wire into the actuator, hack the gate's
-own electronics. I didn't want to modify the gate at all. What I actually needed was
-something **the mower itself controls**, that opens **only** to let the mower
-through and closes again the moment it's clear — so the dog never gets a gap.
-
-Gateduino is that: the mower is detected over Bluetooth, the gate opens just for the
-pass-through, and it closes right behind the mower. No cutting into the gate, no
-perimeter-wire splicing — just **Home Assistant, ESPHome, a few ESP32 boards, and
-your robot mower** working together.
+Gateduino uses a robot mowers bluetooth signature to detect it's location. 
+The gate opens just for the pass-through, and it closes right behind the mower.
+No cutting into the gate. Home Assistant is used as a dashboard and supports
+the ESP32 Nodes with ESPHome.
 
 Happy mowing. 🐕🌱
 
