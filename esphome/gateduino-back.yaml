@@ -8,6 +8,7 @@
 substitutions:
   node_name: gateduino-back
   node_role: back
+  transit_timeout: "10"   # s; this scanner's re-fire lockout (seed value)
   node_id: "2"
 
 packages:
@@ -33,6 +34,24 @@ globals:
     type: uint32_t
     restore_value: false
     initial_value: "0"
+
+# Scanner-only config: re-fire lockout between successive TRIGGERs from this
+# node. (Not a gate open/close timer — the gate's close is governed by its own
+# Arm Timeout / Max Hold / Clear RSSI.)
+number:
+  - platform: template
+    name: "Transit Timeout"
+    id: transit_timeout_num
+    icon: "mdi:timer-outline"
+    unit_of_measurement: s
+    optimistic: true
+    restore_value: true
+    initial_value: ${transit_timeout}
+    min_value: 0
+    max_value: 120
+    step: 1
+    mode: box
+    entity_category: config
 
 sensor:
   - platform: ble_rssi

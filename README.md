@@ -2,7 +2,7 @@
   <img src="docs/images/logo.svg" alt="Gateduino" width="460">
 </p>
 
-<p align="center"><strong>Version 1.00</strong></p>
+<p align="center"><strong>Version 1.1.0</strong></p>
 
 **Automatic gate control for a robot mower.** Gateduino watches for a Mammotion
 Luba mower over Bluetooth and automatically opens an automatic gate as the mower
@@ -75,8 +75,12 @@ Happy mowing. 🐕🌱
   within `Arm Timeout` — e.g. the mower is just mowing near a scanner and trips it
   without intending to cross — the open is **aborted** and the gate closes, then a
   cooldown blocks an immediate re-open from the same lingering mower.
-- A `Max Hold` backstop force-closes after a hard cap, so reflections or a mower
+- A `Max Hold` backstop closes the gate if a crossing runs long — but it waits
+  while the gate's own RSSI shows the mower *in* the gateway, so it never closes
+  on a slow mower. `Hard Max Hold` is the absolute cap, so reflections or a mower
   parked in range can never latch the gate open.
+- Every automatic close re-arms `Child Cooldown`, so a mower still near the gate
+  can't immediately re-open it (no open/close loop).
 - If the mower's battery dies or its Bluetooth drops while in range, the RSSI
   reading is forced to "no signal" after `rssi_timeout` instead of latching the
   last value — so a stalled mower can't hold the gate open indefinitely.
@@ -373,10 +377,11 @@ gate, turn `Auto Mode` off first.
 |--------|-------|---------|
 | `Trigger RSSI` | all | dBm; mower this close to a node ⇒ trigger the gate |
 | `Area RSSI` | all | dBm; approach threshold (dashboard zone marker) |
-| `Transit Timeout` | all | s; scanner re-fire lockout (between successive triggers from one node) |
+| `Transit Timeout` | front, back | s; scanner re-fire lockout (between successive triggers from one node) — **not** a gate open timer |
 | `Clear RSSI` | gate | dBm; once a crossing is confirmed, gate closes when its own RSSI drops below this (hysteresis below `Trigger RSSI`) |
 | `Arm Timeout` | gate | s; false-trip guard — mower must reach the gate within this after opening, or the open is aborted |
-| `Max Hold` | gate | s; hard cap on open time per crossing (backstop against stuck-high RSSI) |
+| `Max Hold` | gate | s; backstop close per crossing; deferred while the mower is at the gate (RSSI ≥ `Trigger RSSI`) |
+| `Hard Max Hold` | gate | s; absolute cap on open time per crossing, never deferred (stuck-high RSSI / parked mower) |
 | `Child Cooldown` | gate | s; backstop window after a trigger is accepted |
 | `Manual Open Duration` | gate | s; how long Momentary Open stays open before auto-closing |
 | `BLE Scanning` | all | enable/disable mower detection |
@@ -407,20 +412,24 @@ the defaults and adjust on the live RSSI graph as the mower drives up to a node:
   barely clear); lower (e.g. −88) → waits until the mower is well away. Watch the
   gate's live RSSI as the mower drives clear and set this to the value it reads
   just after it's past.
-- **`Arm Timeout`** (gate, default 12 s) — the false-trip guard. After the gate
+- **`Arm Timeout`** (gate, default 60 s) — the false-trip guard. After the gate
   opens, the mower has this long to actually reach the gate (confirm the crossing)
   before the open is aborted and closed. Set it a bit longer than the slowest
   real approach from a scanner to the gate; too short → real-but-slow approaches
   get aborted, too long → a false trip holds the gate open longer before giving up.
-- **`Max Hold`** (gate, default 30 s) — hard cap on how long the gate stays open
-  for one crossing. A pure backstop; it should be comfortably longer than a normal
-  confirmed crossing takes.
-- **`Transit Timeout`** (default 10 s) — the per-scanner re-fire lockout: how long
-  a scanner waits before it can send another trigger. (It no longer gates the
-  gate's close — the close is RSSI/exit-driven now.)
+- **`Max Hold`** (gate, default 150 s) — backstop close for one crossing. Once
+  elapsed, the gate closes as soon as its own RSSI drops below `Trigger RSSI`
+  (i.e. it will not close on a mower sitting in the gateway). Set it comfortably
+  longer than a normal end-to-end crossing.
+- **`Hard Max Hold`** (gate, default 300 s) — absolute cap, regardless of RSSI.
+  Only matters if the RSSI is stuck high (reflections, mower parked at the gate).
+- **`Transit Timeout`** (scanners only, default 10 s) — the per-scanner re-fire
+  lockout: how long a scanner waits before it can send another trigger. It does
+  **not** control how long the gate stays open — use `Arm Timeout` / `Max Hold`.
 - **`Child Cooldown`** (gate, default 30 s) — backstop window that ignores repeat
   triggers right after one is accepted, so a single crossing is de-bounced; also
-  the lockout applied after a false-trip abort.
+  re-armed on every automatic close (abort, cleared, max hold) so the gate can't
+  self-reopen on a mower that's still nearby.
 - **`Manual Open Duration`** (gate, default 15 s) — how long *Momentary Open*
   holds before auto-closing.
 

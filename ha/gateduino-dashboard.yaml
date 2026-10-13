@@ -101,8 +101,11 @@ views:
             label: Gate
           - number.gateduino_gate_trigger_rssi
           - number.gateduino_gate_area_rssi
-          - number.gateduino_gate_transit_timeout
           - number.gateduino_gate_child_cooldown
+          - number.gateduino_gate_clear_rssi
+          - number.gateduino_gate_arm_timeout
+          - number.gateduino_gate_max_hold
+          - number.gateduino_gate_hard_max_hold
           - switch.gateduino_gate_ble_scanning
           - type: section
             label: Front

@@ -19,11 +19,17 @@ substitutions:
   luba_mac: !secret luba_mac   # your mower's BLE MAC — set in secrets.yaml (see README)
   trigger_rssi: "-76"      # gate-trigger threshold (dBm); mower this close = at node
   area_rssi: "-87"         # approach threshold (dBm); dashboard zone marker
-  transit_timeout: "10"    # s; scanner re-fire lockout + gate hold-before-close
   rssi_timeout: "15s"      # stale-RSSI decay: no advert for this long => force -100
                            # (deploy-time constant — ESPHome filter timeouts are
                            #  not runtime-settable; prevents a dead/silent mower
                            #  from latching the gate open on a stale reading)
+
+# Firmware version — shared by all three nodes (shown in HA device info).
+# Bump on any change so front/back/gate can be confirmed to run the same build.
+esphome:
+  project:
+    name: wavezcs.gateduino
+    version: "1.1.0"
 
 esp32:
   board: seeed_xiao_esp32s3
@@ -99,19 +105,6 @@ number:
     mode: box
     entity_category: config
 
-  - platform: template
-    name: "Transit Timeout"
-    id: transit_timeout_num
-    icon: "mdi:timer-outline"
-    unit_of_measurement: s
-    optimistic: true
-    restore_value: true
-    initial_value: ${transit_timeout}
-    min_value: 0
-    max_value: 120
-    step: 1
-    mode: box
-    entity_category: config
 
 # ---- Shared switches / buttons ----------------------------------------------
 switch:

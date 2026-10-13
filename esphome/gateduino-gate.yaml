@@ -14,9 +14,13 @@
 #     trigger was a false trip (e.g. mower mowing near a scanner, not crossing) —
 #     close and start child_cooldown so it can't immediately re-open.
 #   - Close (once CONFIRMED) on the FIRST of: gate's own RSSI drops below Clear
-#     RSSI (hysteresis below Trigger RSSI, so it never closes on the mower) OR a
-#     Max Hold backstop elapses (RSSI never decays / mower parked in range).
-#   - child_cooldown is a time-based backstop (same-side spam + post-close window).
+#     RSSI (hysteresis below Trigger RSSI, so it never closes on the mower) OR the
+#     Max Hold backstop elapses. Max Hold is deferred while the gate's own RSSI
+#     says the mower is AT the gate (>= Trigger RSSI) — it never closes on the
+#     mower — up to the absolute Hard Max Hold cap (RSSI stuck high / parked).
+#   - child_cooldown is a time-based backstop (same-side spam + post-close
+#     window). It is re-armed on EVERY autonomous close, so a mower still near
+#     the gate can't immediately self-reopen it (open/close loop).
 #
 # Hardware (only pin kept — the physical gate relay):
 #   GPIO5 (XIAO D4) — gate relay, active-low (on=open)
@@ -144,15 +148,16 @@ number:
     unit_of_measurement: s
     optimistic: true
     restore_value: true
-    initial_value: "12"
+    initial_value: "60"
     min_value: 1
-    max_value: 60
+    max_value: 180
     step: 1
     mode: box
     entity_category: config
 
-  # Backstop: hard cap on how long the gate may stay open for one crossing, so a
-  # stuck-high RSSI (reflections / parked mower) can never latch it open.
+  # Backstop: how long the gate may stay open for one crossing. Deferred while
+  # the gate's own RSSI shows the mower AT the gate (>= Trigger RSSI), so it
+  # never closes on a slow-moving mower mid-crossing.
   - platform: template
     name: "Max Hold"
     id: max_hold_num
@@ -160,9 +165,25 @@ number:
     unit_of_measurement: s
     optimistic: true
     restore_value: true
-    initial_value: "30"
+    initial_value: "150"
     min_value: 5
-    max_value: 300
+    max_value: 600
+    step: 1
+    mode: box
+    entity_category: config
+
+  # Absolute cap, not deferred by RSSI: a stuck-high reading (reflections /
+  # mower parked in the gateway) can never latch the gate open past this.
+  - platform: template
+    name: "Hard Max Hold"
+    id: hard_max_hold_num
+    icon: "mdi:timer-off"
+    unit_of_measurement: s
+    optimistic: true
+    restore_value: true
+    initial_value: "300"
+    min_value: 30
+    max_value: 900
     step: 1
     mode: box
     entity_category: config
@@ -374,6 +395,8 @@ interval:
           float clear = id(clear_rssi_num).state;
           uint32_t arm_ms     = (uint32_t) id(arm_timeout_num).state * 1000UL;
           uint32_t maxhold_ms = (uint32_t) id(max_hold_num).state * 1000UL;
+          uint32_t hardmax_ms = (uint32_t) id(hard_max_hold_num).state * 1000UL;
+          if (hardmax_ms < maxhold_ms) hardmax_ms = maxhold_ms;
           bool local_at_gate = (rssi >= trig);     // mower at the gate chokepoint
           bool local_cleared = (rssi <  clear);    // mower has left (hysteresis)
 
@@ -440,18 +463,25 @@ interval:
               id(crossing_active) = false;
               id(reached_gate) = false;
               id(entry_side) = 0;
+              id(last_trigger_ms) = now;   // re-arm child_cooldown (no re-trip)
               id(activity_log).publish_state("Gate closed - mower cleared gate, transit complete");
               return;
             }
 
-            // Max-hold backstop: never latch open indefinitely (RSSI stuck high
-            // from reflections, or a mower parked in range).
-            if ((now - id(open_since_ms)) >= maxhold_ms) {
+            // Max-hold backstop: never latch open indefinitely. Deferred while
+            // the mower is AT the gate (don't close on it); Hard Max Hold is the
+            // absolute cap for a stuck-high RSSI / mower parked in the gateway.
+            uint32_t held_ms = now - id(open_since_ms);
+            bool hard_cap = held_ms >= hardmax_ms;
+            if (hard_cap || (held_ms >= maxhold_ms && !local_at_gate)) {
               id(gate_relay).turn_off();
               id(crossing_active) = false;
               id(reached_gate) = false;
               id(entry_side) = 0;
-              id(activity_log).publish_state("Gate closed - max hold reached (backstop)");
+              id(last_trigger_ms) = now;   // re-arm child_cooldown (no self-reopen loop)
+              id(activity_log).publish_state(hard_cap
+                  ? "Gate closed - hard max hold reached (backstop)"
+                  : "Gate closed - max hold reached (backstop)");
               return;
             }
           }
